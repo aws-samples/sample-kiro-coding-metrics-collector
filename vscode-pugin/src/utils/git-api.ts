@@ -1,23 +1,36 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 
-// Git 仓库的最小类型定义
+/** Minimal structural type for a VS Code Git extension repository. */
 export interface GitRepository {
   rootUri: vscode.Uri;
-  state: { HEAD?: { commit?: string } };
+  state: {
+    HEAD?: {
+      commit?: string;
+    };
+  };
 }
 
-// 获取 VSCode 内置 Git 扩展 API
+/**
+ * Get the VS Code Git extension API (v1).
+ * Returns undefined if the extension is not available.
+ */
 function getGitAPI() {
   return vscode.extensions
     .getExtension("vscode.git")
     ?.exports.getAPI(1) as { repositories: GitRepository[] } | undefined;
 }
 
-// 查找文件所属的 Git 仓库
+/**
+ * Find the Git repository that contains the given file.
+ * Uses a path-separator guard to prevent false prefix matches
+ * (e.g. `/project-extra/file.ts` against repo root `/project`).
+ */
 export function findRepoForFile(fileUri: vscode.Uri): GitRepository | undefined {
   const git = getGitAPI();
-  if (!git) return undefined;
+  if (!git) {
+    return undefined;
+  }
 
   const filePath = fileUri.fsPath;
   return git.repositories
@@ -28,7 +41,11 @@ export function findRepoForFile(fileUri: vscode.Uri): GitRepository | undefined 
     .sort((a, b) => b.rootUri.fsPath.length - a.rootUri.fsPath.length)[0];
 }
 
-// 获取文件所在 Git 仓库的根目录
+/**
+ * Get the git repository root directory for a file.
+ * Convenience wrapper around findRepoForFile().
+ * Returns null if the Git extension is not available or the file is not in a repo.
+ */
 export function getGitRepoRoot(fileUri: vscode.Uri): string | null {
   return findRepoForFile(fileUri)?.rootUri.fsPath ?? null;
 }
