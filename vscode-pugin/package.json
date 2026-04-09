@@ -29,11 +29,6 @@
           "default": false,
           "description": "Enable notifications for AI and human edit detection."
         },
-        "gitai.experiments.aiTabTracking": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable tracking for AI tab completion detection (experimental)."
-        },
         "gitai.kiro.statsUploadUrl": {
           "type": "string",
           "default": "",
@@ -50,7 +45,7 @@
             "line",
             "all"
           ],
-          "default": "line",
+          "default": "off",
           "scope": "application",
           "enumDescriptions": [
             "Disable gutter decorations (status bar still shows current line info)",

@@ -11,10 +11,6 @@ export class Config {
     return !!this.getRoot().get<boolean>("enableCheckpointLogging");
   }
 
-  static isAiTabTrackingEnabled(): boolean {
-    return !!this.getRoot().get<boolean>("experiments.aiTabTracking");
-  }
-
   static getBlameMode(): BlameMode {
     const mode = this.getRoot().get<string>("blameMode");
     if (mode === 'off' || mode === 'line' || mode === 'all') {

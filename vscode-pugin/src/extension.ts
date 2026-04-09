@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import { AIEditManager } from "./ai-edit-manager";
 import { detectIDEHost } from "./utils/host-kind";
-import { AITabEditManager } from "./ai-tab-edit-manager";
 import { Config } from "./utils/config";
 import { BlameLensManager, registerBlameLensCommands } from "./blame-lens-manager";
 import { initBinaryResolver } from "./utils/binary-path";
@@ -30,20 +29,6 @@ export function activate(context: vscode.ExtensionContext) {
     dispose: () => blameLensManager.dispose()
   });
 
-  if (Config.isAiTabTrackingEnabled()) {
-    const aiTabEditManager = new AITabEditManager(context, ideHostCfg, aiEditManager);
-    const aiTabTrackingEnabled = aiTabEditManager.enableIfSupported();
-
-    if (aiTabTrackingEnabled) {
-      console.log('[git-ai] Tracking document content changes for AI tab completion detection');
-      vscode.window.showInformationMessage('git-ai: AI tab tracking is enabled (experimental)');
-      context.subscriptions.push(
-        vscode.workspace.onDidChangeTextDocument((event) => {
-          aiTabEditManager.handleDocumentContentChangeEvent(event);
-        })
-      );
-    }
-  }
   console.log('[git-ai] ideHostCfg.kind:',ideHostCfg.kind) 
   // 始终注册事件监听器（Kiro 需要通过 Kiro Logs 检测 AI 编辑）
   console.log('[git-ai] Registering event listeners for AI edit detection (Kiro + Copilot)');
