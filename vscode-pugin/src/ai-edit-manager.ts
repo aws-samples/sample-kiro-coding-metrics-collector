@@ -1,19 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { exec, spawn } from "child_process";
-import { isVersionSatisfied } from "./utils/semver";
-import { getGitAiBinary } from "./utils/binary-path";
-import { MIN_GIT_AI_VERSION, GIT_AI_INSTALL_DOCS_URL } from "./consts";
 import { getGitRepoRoot } from "./utils/git-api";
-import { shouldSkipLegacyCopilotHooks } from "./utils/vscode-hooks";
 import { CheckpointStore } from "./attribution/checkpoint-store";
 
 export class AIEditManager {
   private workspaceBaseStoragePath: string | null = null;
-  private gitAiVersion: string | null = null;
-  private hasShownGitAiErrorMessage = false;
-  private readonly legacyCopilotHooksEnabled: boolean;
   private lastHumanCheckpointAt = new Map<string, number>();
   private pendingSaves = new Map<string, {
     timestamp: number;
@@ -44,16 +36,11 @@ export class AIEditManager {
   // 内置归属追踪（替代 git-ai CLI）
   private checkpointStores = new Map<string, CheckpointStore>();
   constructor(context: vscode.ExtensionContext) {
-    this.legacyCopilotHooksEnabled = !shouldSkipLegacyCopilotHooks(vscode.version);
-    if (!this.legacyCopilotHooksEnabled) {
-      console.log(`[git-ai] AIEditManager: VS Code ${vscode.version} has native hooks; skipping legacy extension checkpoints`);
-    }
-
     if (context.storageUri?.fsPath) {
       this.workspaceBaseStoragePath = path.dirname(context.storageUri.fsPath);
     } else {
       // No workspace active (extension will be re-activated when a workspace is opened)
-      console.warn('[git-ai] No workspace storage URI available');
+      console.warn('[kiro-ai-coverage] No workspace storage URI available');
     }
 
     // Periodically clean up old entries from lastHumanCheckpointAt to avoid memory leaks
@@ -70,10 +57,6 @@ export class AIEditManager {
       clearTimeout(timer);
     }
     this.stableContentTimers.clear();
-  }
-
-  public areLegacyCopilotHooksEnabled(): boolean {
-    return this.legacyCopilotHooksEnabled;
   }
 
   private cleanupOldCheckpointEntries(): void {
@@ -94,12 +77,12 @@ export class AIEditManager {
     });
 
     if (entriesToDelete.length > 0) {
-      console.log('[git-ai] AIEditManager: Cleaned up', entriesToDelete.length, 'old checkpoint entries');
+      console.log('[kiro-ai-coverage] AIEditManager: Cleaned up', entriesToDelete.length, 'old checkpoint entries');
     }
   }
 
   public handleSaveEvent(doc: vscode.TextDocument): void {
-    console.log('[git-ai] handleSaveEvent:', doc)
+    console.log('[kiro-ai-coverage] handleSaveEvent:', doc)
     const filePath = doc.uri.fsPath;
 
     // Clear any existing timer for this file
@@ -118,7 +101,7 @@ export class AIEditManager {
       timer
     });
 
-    console.log('[git-ai] AIEditManager: Save event tracked for', filePath);
+    console.log('[kiro-ai-coverage] AIEditManager: Save event tracked for', filePath);
   }
 
   public handleContentChangeEvent(event: vscode.TextDocumentChangeEvent): void {
@@ -170,7 +153,7 @@ export class AIEditManager {
         if (!this.kiroAgentActive) {
           this.kiroAgentActive = true;
           this.kiroSessionId = `kiro-${Date.now()}`;
-          console.log('[git-ai] Kiro agent 开始活跃, session:', this.kiroSessionId);
+          console.log('[kiro-ai-coverage] Kiro agent 开始活跃, session:', this.kiroSessionId);
         }
       }
 
@@ -181,7 +164,7 @@ export class AIEditManager {
       if (writeFileMatch) {
         const filePath = writeFileMatch[1].trim();
         this.kiroAiEditedFiles.set(filePath, Date.now());
-        console.log('[git-ai] Kiro AI 写入文件:', filePath);
+        console.log('[kiro-ai-coverage] Kiro AI 写入文件:', filePath);
         // 注意：不在这里触发 human checkpoint！
         // [WriteFile] completed 是在文件写入完成后才记录的，
         // 此时文件已经包含 AI 修改，human checkpoint 会记录错误的内容。
@@ -191,7 +174,7 @@ export class AIEditManager {
       if (text.includes("[SupervisedDiffSync]") || text.includes("activeExecution\":false")) {
         if (this.kiroAgentActive) {
           this.kiroAgentActive = false;
-          console.log('[git-ai] Kiro agent 结束活跃');
+          console.log('[kiro-ai-coverage] Kiro agent 结束活跃');
         }
       }
     }
@@ -243,7 +226,7 @@ export class AIEditManager {
         const store = this.getCheckpointStore(gitRoot);
         store.executeCheckpoint(kind, authorId, files);
       } catch (err) {
-        console.error(`[git-ai-kiro] Native checkpoint failed for ${gitRoot}:`, err);
+        console.error(`[kiro-ai-coverage] Native checkpoint failed for ${gitRoot}:`, err);
       }
     }
   }
@@ -265,7 +248,7 @@ export class AIEditManager {
   }
 
   public handleOpenEvent(doc: vscode.TextDocument): void {
-    console.log('[git-ai] AIEditManager: Open event detected for', doc);
+    console.log('[kiro-ai-coverage] AIEditManager: Open event detected for', doc);
 
     // Initialize stable content cache for file:// documents when first opened
     if (doc.uri.scheme === "file" && !this.stableFileContent.has(doc.uri.fsPath)) {
@@ -289,13 +272,13 @@ export class AIEditManager {
       }
 
       // Trigger human checkpoint when whenever we see a snapshot open (before any changes are made -- debounce logic is handled in the triggerHumanCheckpoint method)
-      console.log('[git-ai] AIEditManager: Snapshot open event detected for', filePath, 'scheme:', doc.uri.scheme, 'seen count:', this.snapshotOpenEvents.get(filePath)?.count, '- triggering human checkpoint');
+      console.log('[kiro-ai-coverage] AIEditManager: Snapshot open event detected for', filePath, 'scheme:', doc.uri.scheme, 'seen count:', this.snapshotOpenEvents.get(filePath)?.count, '- triggering human checkpoint');
       this.triggerHumanCheckpoint([filePath]);
     }
   }
 
   public handleCloseEvent(doc: vscode.TextDocument): void {
-    console.log('[git-ai] handleCloseEvent:', doc)
+    console.log('[kiro-ai-coverage] handleCloseEvent:', doc)
     // Clean up stable content cache for closed file:// documents
     if (doc.uri.scheme === "file") {
       const filePath = doc.uri.fsPath;
@@ -308,8 +291,8 @@ export class AIEditManager {
     }
 
     if (doc.uri.scheme === "chat-editing-snapshot-text-model" || doc.uri.scheme === "chat-editing-text-model") {
-      console.log('[git-ai] AIEditManager: Snapshot close event detected for', doc);
-      // console.log('[git-ai] AIEditManager: Snapshot close event detected, triggering human checkpoint');
+      console.log('[kiro-ai-coverage] AIEditManager: Snapshot close event detected for', doc);
+      // console.log('[kiro-ai-coverage] AIEditManager: Snapshot close event detected, triggering human checkpoint');
       // const filePath = doc.uri.fsPath;
       // this.triggerHumanCheckpoint([filePath]);
     }
@@ -332,7 +315,7 @@ export class AIEditManager {
 
     const snapshotInfo = this.snapshotOpenEvents.get(filePath);
 
-    console.log('[git-ai] AIEditManager: Evaluating save for checkpoint for', filePath, '- snapshot info:', snapshotInfo);
+    console.log('[kiro-ai-coverage] AIEditManager: Evaluating save for checkpoint for', filePath, '- snapshot info:', snapshotInfo);
 
     // Check if we have 1+ valid snapshot open events within the debounce window
     let checkpointTriggered = false;
@@ -342,49 +325,49 @@ export class AIEditManager {
       const snapshotAge = Date.now() - snapshotInfo.timestamp;
 
       if (snapshotAge >= this.MAX_SNAPSHOT_AGE_MS) {
-        console.log('[git-ai] AIEditManager: Snapshot is too old (' + Math.round(snapshotAge / 1000) + 's), skipping AI checkpoint for', filePath);
+        console.log('[kiro-ai-coverage] AIEditManager: Snapshot is too old (' + Math.round(snapshotAge / 1000) + 's), skipping AI checkpoint for', filePath);
       } else {
         const storagePath = this.workspaceBaseStoragePath;
         if (!storagePath) {
-          console.warn('[git-ai] AIEditManager: Missing workspace storage path, skipping AI checkpoint for', filePath);
+          console.warn('[kiro-ai-coverage] AIEditManager: Missing workspace storage path, skipping AI checkpoint for', filePath);
         } else {
           try {
             const params = JSON.parse(snapshotInfo.uri.query);
             let sessionId = params.chatSessionId || params.sessionId;
 
-            console.log("[git-ai] AIEditManager: Parsed snapshot params:", params);
+            console.log("[kiro-ai-coverage] AIEditManager: Parsed snapshot params:", params);
 
             // "{"kind":"doc","documentId":"modified-file-entry::1","chatSessionResource":{"$mid":1,"external":"vscode-chat-session://local/MDFmNjJlNmItOTgxMi00OTY0LWI5YTYtYzRmZDBjZTE1ZmEy","path":"/MDFmNjJlNmItOTgxMi00OTY0LWI5YTYtYzRmZDBjZTE1ZmEy","scheme":"vscode-chat-session","authority":"local"}}"
             if (!sessionId && params.chatSessionResource) {
               // VS Code update includes the chatSessionResource object with the sessionId encoded in the path
-              console.log("[git-ai] AIEditManager: Detected chatSessionResource, attempting to parse sessionId");
+              console.log("[kiro-ai-coverage] AIEditManager: Detected chatSessionResource, attempting to parse sessionId");
               sessionId = params.chatSessionResource.path ? Buffer.from(params.chatSessionResource.path.slice(1), 'base64').toString('utf-8') : undefined;
-              console.log("[git-ai] AIEditManager: Parsed sessionId from chatSessionResource:", sessionId);
+              console.log("[kiro-ai-coverage] AIEditManager: Parsed sessionId from chatSessionResource:", sessionId);
             }
 
             if (!sessionId && params.session && params.session.path && params.session.path.startsWith && params.session.path.startsWith('/')) {
               // VS Code update includes the sessionId encoded as Base64 
-              console.log("[git-ai] AIEditManager: Detected session as object, decoding sessionId");
+              console.log("[kiro-ai-coverage] AIEditManager: Detected session as object, decoding sessionId");
               sessionId = Buffer.from(params.session.path.slice(1), 'base64').toString('utf-8');
-              console.log("[git-ai] AIEditManager: Parsed sessionId from Base64:", sessionId);
+              console.log("[kiro-ai-coverage] AIEditManager: Parsed sessionId from Base64:", sessionId);
             }
 
             if (!sessionId) {
-              console.warn('[git-ai] AIEditManager: Snapshot URI missing session id, skipping AI checkpoint for', filePath);
+              console.warn('[kiro-ai-coverage] AIEditManager: Snapshot URI missing session id, skipping AI checkpoint for', filePath);
             } else {
               const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
               if (!workspaceFolder) {
-                console.warn('[git-ai] AIEditManager: No workspace folder found for', filePath, '- skipping AI checkpoint');
+                console.warn('[kiro-ai-coverage] AIEditManager: No workspace folder found for', filePath, '- skipping AI checkpoint');
               } else {
               const chatSessionsDir = path.join(storagePath, 'chatSessions');
               const jsonlPath = path.join(chatSessionsDir, `${sessionId}.jsonl`);
               const jsonPath = path.join(chatSessionsDir, `${sessionId}.json`);
               const chatSessionPath = fs.existsSync(jsonlPath) ? jsonlPath : jsonPath;
-              console.log('[git-ai] AIEditManager: AI edit detected for', filePath, '- triggering AI checkpoint (sessionId:', sessionId, ', chatSessionPath:', chatSessionPath, ', workspaceFolder:', workspaceFolder.uri.fsPath, ')');
+              console.log('[kiro-ai-coverage] AIEditManager: AI edit detected for', filePath, '- triggering AI checkpoint (sessionId:', sessionId, ', chatSessionPath:', chatSessionPath, ', workspaceFolder:', workspaceFolder.uri.fsPath, ')');
               
               // Get dirty files and ensure the saved file is included with its content from VS Code
               const dirtyFiles = this.getDirtyFiles();
-              console.log('[git-ai] AIEditManager: Dirty files:', dirtyFiles);
+              console.log('[kiro-ai-coverage] AIEditManager: Dirty files:', dirtyFiles);
               
               // Get the content of the saved file from VS Code (not from FS) to handle codespaces lag
               const savedFileDoc = vscode.workspace.textDocuments.find(doc => 
@@ -394,20 +377,13 @@ export class AIEditManager {
                 dirtyFiles[filePath] = savedFileDoc.getText();
               }
               
-              console.log('[git-ai] AIEditManager: Dirty files with saved file content:', dirtyFiles);
-              this.checkpoint("ai", JSON.stringify({
-                hook_event_name: "after_edit",
-                chat_session_path: chatSessionPath,
-                session_id: sessionId,
-                edited_filepaths: [filePath],
-                workspace_folder: workspaceFolder.uri.fsPath,
-                dirty_files: dirtyFiles,
-              }));
+              console.log('[kiro-ai-coverage] AIEditManager: Copilot AI edit detected for', filePath, '- triggering native AI checkpoint');
+              this.executeCheckpointNative("ai_agent", [filePath], sessionId);
               checkpointTriggered = true;
               }
             }
           } catch (e) {
-            console.error('[git-ai] AIEditManager: Unable to trigger AI checkpoint for', filePath, e);
+            console.error('[kiro-ai-coverage] AIEditManager: Unable to trigger AI checkpoint for', filePath, e);
           }
         }
       }
@@ -416,7 +392,7 @@ export class AIEditManager {
     if (!checkpointTriggered) {
       // Kiro AI 编辑检测：检查文件是否被 Kiro Logs 标记为 AI 编辑
       if (this.isKiroAiEdited(filePath)) {
-        console.log('[git-ai] AIEditManager: Kiro AI edit detected for', filePath, '- triggering native AI checkpoint');
+        console.log('[kiro-ai-coverage] AIEditManager: Kiro AI edit detected for', filePath, '- triggering native AI checkpoint');
 
         // 使用内置归属追踪（不依赖 git-ai CLI）
         this.executeCheckpointNative("ai_agent", [filePath], this.kiroSessionId);
@@ -429,7 +405,7 @@ export class AIEditManager {
 
     if (!checkpointTriggered) {
       // 非 AI 编辑 → 触发 human checkpoint（记录人工修改覆盖 AI 行的情况）
-      console.log('[git-ai] AIEditManager: No AI pattern, triggering human checkpoint for', filePath);
+      console.log('[kiro-ai-coverage] AIEditManager: No AI pattern, triggering human checkpoint for', filePath);
       this.executeCheckpointNative("human", [filePath], "human");
     }
 
@@ -444,7 +420,7 @@ export class AIEditManager {
    */
   private triggerHumanCheckpoint(willEditFilepaths: string[]): void {
     if (!willEditFilepaths || willEditFilepaths.length === 0) {
-      console.warn('[git-ai] AIEditManager: Cannot trigger human checkpoint without files');
+      console.warn('[kiro-ai-coverage] AIEditManager: Cannot trigger human checkpoint without files');
       return;
     }
 
@@ -453,14 +429,14 @@ export class AIEditManager {
     const filesToCheckpoint = willEditFilepaths.filter(filePath => {
       const lastCheckpoint = this.lastHumanCheckpointAt.get(filePath);
       if (lastCheckpoint && (now - lastCheckpoint) < this.HUMAN_CHECKPOINT_DEBOUNCE_MS) {
-        console.log('[git-ai] AIEditManager: Skipping file due to debounce:', filePath);
+        console.log('[kiro-ai-coverage] AIEditManager: Skipping file due to debounce:', filePath);
         return false;
       }
       return true;
     });
 
     if (filesToCheckpoint.length === 0) {
-      console.log('[git-ai] AIEditManager: All files were recently checkpointed, skipping');
+      console.log('[kiro-ai-coverage] AIEditManager: All files were recently checkpointed, skipping');
       return;
     }
 
@@ -493,11 +469,11 @@ export class AIEditManager {
       || vscode.workspace.workspaceFolders?.[0];
 
     if (!workspaceFolder) {
-      console.warn('[git-ai] AIEditManager: No workspace folder found for human checkpoint');
+      console.warn('[kiro-ai-coverage] AIEditManager: No workspace folder found for human checkpoint');
       return;
     }
 
-    console.log('[git-ai] AIEditManager: Triggering human checkpoint for files:', filesToCheckpoint);
+    console.log('[kiro-ai-coverage] AIEditManager: Triggering human checkpoint for files:', filesToCheckpoint);
 
     // Prepare hook input for human checkpoint
     const hookInput = JSON.stringify({
@@ -508,213 +484,8 @@ export class AIEditManager {
       dirty_files: dirtyFiles,
     });
 
-    this.checkpoint("human", hookInput);
-  }
-
-  async checkpoint(author: "human" | "ai" | "ai_tab", hookInput: string): Promise<boolean> {
-    // 对于 Kiro AI 编辑，始终执行 checkpoint（不受 legacyCopilotHooksEnabled 限制）
-    const isKiroSession = hookInput.includes('"session_id":"kiro-');
-    if (!isKiroSession && author !== "ai_tab" && !this.legacyCopilotHooksEnabled) {
-      console.log("[git-ai] AIEditManager: Skipping legacy human/ai checkpoint dispatch (native VS Code hooks active)");
-      return true;
-    }
-
-    if (!(await this.checkGitAi())) {
-      return false;
-    }
-
-    return new Promise<boolean>((resolve) => {
-      let workspaceRoot: string | undefined;
-
-      // 如果 hookInput 包含 workspace_folder，优先使用它（支持跨工作区）
-      try {
-        const parsed = JSON.parse(hookInput);
-        if (parsed.workspace_folder) {
-          const gitRoot = getGitRepoRoot(vscode.Uri.file(parsed.workspace_folder));
-          workspaceRoot = gitRoot || parsed.workspace_folder;
-        }
-      } catch { /* ignore */ }
-
-      if (!workspaceRoot) {
-        const activeEditor = vscode.window.activeTextEditor;
-        if (activeEditor) {
-          const documentUri = activeEditor.document.uri;
-          const gitRepoRoot = getGitRepoRoot(documentUri);
-          if (gitRepoRoot) {
-            workspaceRoot = gitRepoRoot;
-          } else {
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(documentUri);
-            if (workspaceFolder) {
-              workspaceRoot = workspaceFolder.uri.fsPath;
-            }
-          }
-        }
-      }
-
-      if (!workspaceRoot) {
-        const firstWorkspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (firstWorkspaceFolder) {
-          const gitRepoRoot = getGitRepoRoot(firstWorkspaceFolder.uri);
-          workspaceRoot = gitRepoRoot || firstWorkspaceFolder.uri.fsPath;
-        }
-      }
-
-      if (!workspaceRoot) {
-        console.warn('[git-ai] AIEditManager: No workspace root found, skipping checkpoint');
-        resolve(false);
-        return;
-      }
-
-      // 判断是否使用 agent-v1 preset（Kiro AI 编辑）
-      const isKiroSession = hookInput.includes('"session_id":"kiro-');
-      const args = ["checkpoint"];
-      if (author === "ai_tab") {
-        args.push("ai_tab");
-      } else if (isKiroSession) {
-        args.push("agent-v1");
-      } else {
-        args.push("github-copilot");
-      }
-      args.push("--hook-input", "stdin");
-
-      // 为 Kiro agent-v1 构建正确的 JSON 输入
-      let finalHookInput = hookInput;
-      if (isKiroSession) {
-        try {
-          const parsed = JSON.parse(hookInput);
-          if (author === "human") {
-            finalHookInput = JSON.stringify({
-              type: "human",
-              repo_working_dir: workspaceRoot,
-              will_edit_filepaths: parsed.will_edit_filepaths,
-              dirty_files: parsed.dirty_files,
-            });
-          } else {
-            finalHookInput = JSON.stringify({
-              type: "ai_agent",
-              repo_working_dir: workspaceRoot,
-              agent_name: "kiro",
-              model: "kiro-ai",
-              conversation_id: parsed.session_id || this.kiroSessionId,
-              edited_filepaths: parsed.edited_filepaths,
-              dirty_files: parsed.dirty_files,
-              transcript: { messages: [{ type: "assistant", text: "Kiro AI edit" }] },
-            });
-          }
-        } catch { /* use original */ }
-      }
-
-      console.log('[git-ai] AIEditManager: Spawning git-ai with args:', args, 'cwd:', workspaceRoot);
-
-      const proc = spawn(getGitAiBinary(), args, { cwd: workspaceRoot });
-
-      let stdout = "";
-      let stderr = "";
-
-      proc.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on("error", (error) => {
-        console.error('[git-ai] AIEditManager: Checkpoint error:', error, stdout, stderr);
-        vscode.window.showErrorMessage(
-          "git-ai checkpoint error: " + error.message + " - " + stdout + " - " + stderr
-        );
-        resolve(false);
-      });
-
-      proc.on("close", (code) => {
-        if (code !== 0) {
-          console.error('[git-ai] AIEditManager: Checkpoint exited with code:', code, stdout, stderr);
-          vscode.window.showErrorMessage(
-            "git-ai checkpoint error: exited with code " + code + " - " + stdout + " - " + stderr
-          );
-          resolve(false);
-        } else {
-          const config = vscode.workspace.getConfiguration("gitai");
-          if (config.get("enableCheckpointLogging")) {
-            vscode.window.showInformationMessage(
-              "Checkpoint created " + author
-            );
-          }
-          resolve(true);
-        }
-      });
-
-      if (hookInput) {
-        proc.stdin.write(finalHookInput);
-        proc.stdin.end();
-      }
-    });
-  }
-
-  async showGitAiUpdateRequiredMsg(detectedVersion: string) {
-    const url = vscode.Uri.parse(GIT_AI_INSTALL_DOCS_URL);
-
-    const choice = await vscode.window.showErrorMessage(
-      `git-ai version ${detectedVersion} is no longer supported.`,
-      'Update git-ai'
-    );
-
-    if (choice === 'Update git-ai') {
-      await vscode.env.openExternal(url);
-    }
-  }
-
-  async showGitAiNotInstalledMsg() {
-    const url = vscode.Uri.parse(GIT_AI_INSTALL_DOCS_URL);
-
-    const choice = await vscode.window.showInformationMessage(
-      'git-ai is not installed.',
-      'Install git-ai'
-    );
-
-    if (choice === 'Install git-ai') {
-      await vscode.env.openExternal(url);
-    }
-  }
-
-  async checkGitAi(): Promise<boolean> {
-    if (this.gitAiVersion) {
-      return true;
-    }
-    // TODO Consider only re-checking every X attempts
-    return new Promise((resolve) => {
-      exec("git-ai --version", (error, stdout, stderr) => {
-        if (error) {
-          if (!this.hasShownGitAiErrorMessage) {
-            // Show startup notification
-            vscode.window.showInformationMessage(
-              "git-ai not installed. Visit https://github.com/git-ai-project/git-ai to install it."
-            );
-            this.hasShownGitAiErrorMessage = true;
-          }
-          // not installed. do nothing
-          resolve(false);
-        } else {
-          const stdoutTrimmed = stdout.trim();
-          // Extract strict semver (major.minor.patch) and ignore any trailing labels like "(debug)"
-          const semverMatch = stdoutTrimmed.match(/\b\d+\.\d+\.\d+\b/);
-          const detectedVersion = semverMatch ? semverMatch[0] : stdoutTrimmed.replace(/\s*\(.+\)\s*$/, "");
-
-          if (!isVersionSatisfied(detectedVersion, MIN_GIT_AI_VERSION)) {
-            if (!this.hasShownGitAiErrorMessage) {
-              this.showGitAiUpdateRequiredMsg(detectedVersion);
-              this.hasShownGitAiErrorMessage = true;
-            }
-            resolve(false);
-            return;
-          }
-
-          // Save the version for later use
-          this.gitAiVersion = detectedVersion;
-          resolve(true);
-        }
-      });
-    });
+    this.executeCheckpointNative("human", filesToCheckpoint.map(f => 
+      path.isAbsolute(f) ? f : path.join(workspaceFolder.uri.fsPath, f)
+    ), "human");
   }
 }

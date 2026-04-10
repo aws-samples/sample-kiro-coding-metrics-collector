@@ -1,38 +1,20 @@
 /**
- * StatsUploader - 查询 git-ai stats 并上报到 HTTP 接口
- *
- * 配置项（VSCode settings）：
- *   gitai.kiro.statsUploadUrl   - 上报 URL
- *   gitai.kiro.statsUploadToken - Bearer token
+ * StatsUploader - 使用内置归属追踪计算 stats 并上报
+ * 不依赖 git-ai CLI。
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as https from "node:https";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { getGitAiBinary } from "./utils/binary-path";
 import { calculateCommitStats } from "./attribution/stats-calculator";
 
-const REQUEST_TIMEOUT_MS = 10_000;const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 2_000;
-const NOTE_RETRY_COUNT = 3;
-const NOTE_RETRY_DELAY_MS = 2_000;
-
-interface CommitStats {
-  human_additions: number;
-  mixed_additions: number;
-  ai_additions: number;
-  ai_accepted: number;
-  total_ai_additions: number;
-  total_ai_deletions: number;
-  time_waiting_for_ai: number;
-  git_diff_added_lines: number;
-  git_diff_deleted_lines: number;
-  tool_model_breakdown: Record<string, unknown>;
-}
 
 interface UploadPayload {
   repo_name: string;
@@ -43,72 +25,45 @@ interface UploadPayload {
   user_name: string;
   user_email: string;
   reported_at: string;
-  commit_stats: CommitStats;
+  commit_stats: Record<string, unknown>;
 }
 
 export async function uploadCommitStats(
   workspaceDir: string,
   commitSha: string
 ): Promise<void> {
-  const config = vscode.workspace.getConfiguration("gitai.kiro");
+  const config = vscode.workspace.getConfiguration("kiroAiCoverage");
   const url = config.get<string>("statsUploadUrl") ?? "";
   const token = config.get<string>("statsUploadToken") ?? "";
 
-  if (!url) {
-    console.log("[git-ai-kiro] statsUploadUrl not configured, skipping upload");
-    return;
-  }
+  if (!url) return;
 
-  // 校验 URL 格式
-  try {
-    new URL(url);
-  } catch {
-    console.error(`[git-ai-kiro] Invalid statsUploadUrl: ${url}`);
-    return;
-  }
-
-  const binary = getGitAiBinary();
+  try { new URL(url); } catch { return; }
 
   try {
-    // 优先使用内置归属追踪计算 stats
-    let commitStats: CommitStats | null = null;
-    try {
-      const native = calculateCommitStats(workspaceDir, commitSha);
-      // 转换为 snake_case 格式（兼容 git-ai CLI 输出）
-      commitStats = {
-        human_additions: native.humanAdditions,
-        mixed_additions: native.mixedAdditions,
-        ai_additions: native.aiAdditions,
-        ai_accepted: native.aiAccepted,
-        total_ai_additions: native.totalAiAdditions,
-        total_ai_deletions: native.totalAiDeletions,
-        time_waiting_for_ai: 0,
-        git_diff_added_lines: native.gitDiffAddedLines,
-        git_diff_deleted_lines: native.gitDiffDeletedLines,
-        tool_model_breakdown: Object.fromEntries(
-          Object.entries(native.toolModelBreakdown).map(([k, v]) => [k, {
-            ai_additions: v.aiAdditions,
-            mixed_additions: v.mixedAdditions,
-            ai_accepted: v.aiAccepted,
-            total_ai_additions: v.totalAiAdditions,
-            total_ai_deletions: v.totalAiDeletions,
-            time_waiting_for_ai: 0,
-          }])
-        ),
-      };
-    } catch (err) {
-      console.log(`[git-ai-kiro] Native stats failed, falling back to git-ai CLI: ${err}`);
-    }
+    const native = calculateCommitStats(workspaceDir, commitSha);
 
-    // fallback: 使用 git-ai CLI
-    if (!commitStats) {
-      commitStats = await queryCommitStatsWithRetry(binary, workspaceDir, commitSha);
-    }
-
-    if (!commitStats) {
-      console.log(`[git-ai-kiro] No stats for commit ${commitSha.slice(0, 8)}, skipping`);
-      return;
-    }
+    const commitStats = {
+      human_additions: native.humanAdditions,
+      mixed_additions: native.mixedAdditions,
+      ai_additions: native.aiAdditions,
+      ai_accepted: native.aiAccepted,
+      total_ai_additions: native.totalAiAdditions,
+      total_ai_deletions: native.totalAiDeletions,
+      time_waiting_for_ai: 0,
+      git_diff_added_lines: native.gitDiffAddedLines,
+      git_diff_deleted_lines: native.gitDiffDeletedLines,
+      tool_model_breakdown: Object.fromEntries(
+        Object.entries(native.toolModelBreakdown).map(([k, v]) => [k, {
+          ai_additions: v.aiAdditions,
+          mixed_additions: v.mixedAdditions,
+          ai_accepted: v.aiAccepted,
+          total_ai_additions: v.totalAiAdditions,
+          total_ai_deletions: v.totalAiDeletions,
+          time_waiting_for_ai: 0,
+        }])
+      ),
+    };
 
     const machineId = crypto.createHash("sha256").update(os.hostname()).digest("hex");
 
@@ -128,47 +83,11 @@ export async function uploadCommitStats(
       .update(`${commitSha}:${machineId}`).digest("hex");
 
     await postWithRetry(url, token, idempotencyKey, payload);
-    console.log(`[git-ai-kiro] Stats uploaded: ${commitSha.slice(0, 8)}`);
+    console.log(`[kiro-ai-coverage] Stats uploaded: ${commitSha.slice(0, 8)}`);
   } catch (err) {
-    // 静默处理上报错误，不影响用户体验
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log(`[git-ai-kiro] Stats upload skipped: ${errMsg}`);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[kiro-ai-coverage] Stats upload skipped: ${msg}`);
   }
-}
-
-function queryCommitStats(binary: string, cwd: string, commitSha: string): Promise<CommitStats | null> {
-  return new Promise((resolve) => {
-    const proc = spawn(binary, ["stats", commitSha, "--json"], { cwd });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => { stdout += d.toString(); });
-    proc.stderr.on("data", (d) => { stderr += d.toString(); });
-    proc.on("error", () => resolve(null));
-    proc.on("close", (code) => {
-      if (code !== 0) { resolve(null); return; }
-      try { resolve(JSON.parse(stdout)); } catch { resolve(null); }
-    });
-  });
-}
-
-async function queryCommitStatsWithRetry(
-  binary: string, cwd: string, commitSha: string
-): Promise<CommitStats | null> {
-  for (let attempt = 0; attempt <= NOTE_RETRY_COUNT; attempt++) {
-    if (attempt > 0) {
-      console.log(`[git-ai-kiro] Retrying stats query (${attempt}/${NOTE_RETRY_COUNT})...`);
-      await sleep(NOTE_RETRY_DELAY_MS);
-    }
-    const stats = await queryCommitStats(binary, cwd, commitSha);
-    if (!stats) return null;
-
-    const hasAddedLines = stats.git_diff_added_lines > 0;
-    const hasAttribution = (stats.human_additions + stats.ai_additions) > 0;
-    if (!hasAddedLines || hasAttribution) return stats;
-
-    console.log(`[git-ai-kiro] Stats show ${stats.git_diff_added_lines} added but 0 attribution, note may not be ready`);
-  }
-  return queryCommitStats(binary, cwd, commitSha);
 }
 
 function getRepoName(cwd: string): string {
@@ -193,27 +112,15 @@ function gitConfigValue(cwd: string, key: string): string {
 async function postWithRetry(url: string, token: string, idempotencyKey: string, payload: UploadPayload): Promise<void> {
   const body = JSON.stringify(payload);
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      console.log(`[git-ai-kiro] Stats upload retry ${attempt}/${MAX_RETRIES}`);
-      await sleep(BASE_DELAY_MS * Math.pow(2, attempt - 1));
-    }
+    if (attempt > 0) await sleep(BASE_DELAY_MS * Math.pow(2, attempt - 1));
     try {
       const code = await doPost(url, token, idempotencyKey, body);
-      if (code === 0) return; // 连接失败（已在 doPost 中记录日志），不重试
+      if (code === 0) return;
       if (code >= 200 && code < 300) return;
-      if (code >= 400 && code < 500) {
-        console.error(`[git-ai-kiro] Stats upload got HTTP ${code}, not retrying`);
-        return;
-      }
-      console.warn(`[git-ai-kiro] Stats upload got HTTP ${code}, will retry`);
+      if (code >= 400 && code < 500) return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      // DNS/connection errors: don't retry, the URL is likely wrong
-      if (msg.includes("ENOTFOUND") || msg.includes("ECONNREFUSED") || msg.includes("AggregateError")) {
-        console.log(`[git-ai-kiro] Stats endpoint unreachable, not retrying: ${msg}`);
-        return;
-      }
-      console.warn(`[git-ai-kiro] Stats upload error: ${msg}`);
+      if (msg.includes("ENOTFOUND") || msg.includes("ECONNREFUSED") || msg.includes("AggregateError")) return;
       if (attempt === MAX_RETRIES) throw err;
     }
   }
@@ -221,16 +128,9 @@ async function postWithRetry(url: string, token: string, idempotencyKey: string,
 
 function doPost(url: string, token: string, idempotencyKey: string, body: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      reject(new Error(`Invalid URL: ${url}`));
-      return;
-    }
+    const parsed = new URL(url);
     const isHttps = parsed.protocol === "https:";
     const transport = isHttps ? https : http;
-
     const req = transport.request({
       hostname: parsed.hostname,
       port: parsed.port || (isHttps ? 443 : 80),
@@ -238,29 +138,19 @@ function doPost(url: string, token: string, idempotencyKey: string, body: string
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "X-Idempotency-Key": idempotencyKey,
         "Content-Length": Buffer.byteLength(body),
       },
       timeout: REQUEST_TIMEOUT_MS,
     }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
-
     req.on("error", (err) => {
-      // 连接失败（ECONNREFUSED、DNS 失败等）静默处理
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ETIMEDOUT" || err.name === "AggregateError") {
-        console.log(`[git-ai-kiro] Stats endpoint unreachable (${code || err.name}): ${parsed.hostname}`);
-        resolve(0); // 返回 0 表示连接失败，不重试
-      } else {
-        reject(err);
-      }
+      if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ETIMEDOUT") {
+        resolve(0);
+      } else { reject(err); }
     });
-    req.on("timeout", () => {
-      req.destroy();
-      console.log("[git-ai-kiro] Stats upload request timed out");
-      resolve(0);
-    });
-
+    req.on("timeout", () => { req.destroy(); resolve(0); });
     req.write(body);
     req.end();
   });

@@ -19,13 +19,13 @@ export class CommitWatcher implements vscode.Disposable {
   start(): void {
     const gitExtension = vscode.extensions.getExtension<GitExtensionAPI>("vscode.git");
     if (!gitExtension) {
-      console.log("[git-ai-kiro] vscode.git extension not found, commit watcher disabled");
+      console.log("[kiro-ai-coverage] vscode.git extension not found, commit watcher disabled");
       return;
     }
 
     const git = gitExtension.isActive ? gitExtension.exports.getAPI(1) : null;
     if (!git) {
-      console.log("[git-ai-kiro] Git API not available, commit watcher disabled");
+      console.log("[kiro-ai-coverage] Git API not available, commit watcher disabled");
       return;
     }
 
@@ -38,7 +38,7 @@ export class CommitWatcher implements vscode.Disposable {
     });
     this.disposables.push(sub);
 
-    console.log(`[git-ai-kiro] Commit watcher started, watching ${git.repositories.length} repo(s)`);
+    console.log(`[kiro-ai-coverage] Commit watcher started, watching ${git.repositories.length} repo(s)`);
   }
 
   private watchRepository(repo: GitRepository): void {
@@ -69,16 +69,16 @@ export class CommitWatcher implements vscode.Disposable {
       if (this.uploadedCommits.has(currentHead)) return;
       this.uploadedCommits.add(currentHead);
 
-      console.log(`[git-ai-kiro] New commit detected: ${currentHead.slice(0, 8)} in ${repoPath}`);
+      console.log(`[kiro-ai-coverage] New commit detected: ${currentHead.slice(0, 8)} in ${repoPath}`);
 
       if (!isLocalCommit(repoPath)) {
-        console.log(`[git-ai-kiro] Not a local commit, skipping upload`);
+        console.log(`[kiro-ai-coverage] Not a local commit, skipping upload`);
         return;
       }
 
       setTimeout(() => {
         uploadCommitStats(repoPath, currentHead).catch((err) => {
-          console.error(`[git-ai-kiro] Failed to upload commit stats: ${err}`);
+          console.error(`[kiro-ai-coverage] Failed to upload commit stats: ${err}`);
         });
       }, POST_COMMIT_DELAY_MS);
     });

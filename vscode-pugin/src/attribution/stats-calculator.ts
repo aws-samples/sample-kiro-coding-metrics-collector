@@ -18,7 +18,7 @@ export function calculateCommitStats(workDir: string, commitSha: string): Commit
   const parentSha = getParentCommit(workDir, commitSha);
   const checkpoints = readCheckpointsForBase(workDir, parentSha);
 
-  console.log(`[git-ai-kiro] Stats: ${checkpoints.length} checkpoints under base ${parentSha.slice(0, 8)}`);
+  console.log(`[kiro-ai-coverage] Stats: ${checkpoints.length} checkpoints under base ${parentSha.slice(0, 8)}`);
 
   const { added, deleted } = getCommitDiffStats(workDir, commitSha);
 
@@ -112,7 +112,7 @@ function getCommitAddedLinesByFile(workDir: string, commitSha: string): Map<stri
   try {
     const output = execFileSync(
       "git", ["diff", "-U0", `${commitSha}~1`, commitSha],
-      { cwd: workDir, timeout: 15000, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }
+      { cwd: workDir, timeout: 15000, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] }
     );
 
     let currentFile = "";
@@ -140,7 +140,7 @@ function getCommitAddedLinesByFile(workDir: string, commitSha: string): Map<stri
       }
     }
   } catch (err) {
-    console.error(`[git-ai-kiro] Failed to get commit added lines: ${err}`);
+    console.error(`[kiro-ai-coverage] Failed to get commit added lines: ${err}`);
   }
   return result;
 }
@@ -194,7 +194,7 @@ function getCommitDiffStats(workDir: string, commitSha: string): { added: number
   try {
     const output = execFileSync(
       "git", ["diff", "--numstat", `${commitSha}~1`, commitSha],
-      { cwd: workDir, timeout: 10000, encoding: "utf-8" }
+      { cwd: workDir, timeout: 10000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
     );
     let added = 0, deleted = 0;
     for (const line of output.split("\n")) {

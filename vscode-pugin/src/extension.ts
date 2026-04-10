@@ -1,29 +1,11 @@
 import * as vscode from "vscode";
 import { AIEditManager } from "./ai-edit-manager";
-import { detectIDEHost } from "./utils/host-kind";
-import { BlameLensManager, registerBlameLensCommands } from "./blame-lens-manager";
-import { initBinaryResolver } from "./utils/binary-path";
 import { CommitWatcher } from "./commit-watcher";
 
 export function activate(context: vscode.ExtensionContext) {
-
-  initBinaryResolver(context.extensionMode);
-
-  const ideHostCfg = detectIDEHost();
+  console.log("[kiro-ai-coverage] Activating extension");
 
   const aiEditManager = new AIEditManager(context);
-
-  // Initialize and activate blame lens manager
-  registerBlameLensCommands(context);
-  const blameLensManager = new BlameLensManager(context);
-  blameLensManager.activate();
-  context.subscriptions.push({
-    dispose: () => blameLensManager.dispose()
-  });
-
-  console.log('[git-ai] ideHostCfg.kind:',ideHostCfg.kind) 
-  // 始终注册事件监听器（Kiro 需要通过 Kiro Logs 检测 AI 编辑）
-  console.log('[git-ai] Registering event listeners for AI edit detection (Kiro + Copilot)');
 
   // Save event
   context.subscriptions.push(
@@ -57,16 +39,10 @@ export function activate(context: vscode.ExtensionContext) {
   const commitWatcher = new CommitWatcher();
   commitWatcher.start();
   context.subscriptions.push(commitWatcher);
-  
 
-  // vscode.commands.getCommands(true)
-  //   .then(commands => {
-  //     const content = commands.join('\n');
-  //     vscode.workspace.openTextDocument({ content, language: 'text' })
-  //       .then(doc => vscode.window.showTextDocument(doc));
-  //   });
+  console.log("[kiro-ai-coverage] Extension activated");
 }
 
 export function deactivate() {
-  console.log('[git-ai] extension deactivated');
+  console.log("[kiro-ai-coverage] Extension deactivated");
 }

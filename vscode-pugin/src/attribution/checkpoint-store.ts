@@ -29,6 +29,7 @@ export class CheckpointStore {
     try {
       return execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: this.workDir, timeout: 5000, encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       }).trim();
     } catch {
       return "initial";
@@ -80,6 +81,7 @@ export class CheckpointStore {
     try {
       return execFileSync("git", ["show", `HEAD:${filePath}`], {
         cwd: this.workDir, timeout: 5000, encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch {
       return "";
@@ -167,7 +169,7 @@ export class CheckpointStore {
     fs.appendFileSync(cpFile, JSON.stringify(checkpoint) + "\n");
 
     console.log(
-      `[git-ai-kiro] ${kind} checkpoint: ${entries.length} file(s), +${totalAdditions} -${totalDeletions}`
+      `[kiro-ai-coverage] ${kind} checkpoint: ${entries.length} file(s), +${totalAdditions} -${totalDeletions}`
     );
 
     return checkpoint;
@@ -201,6 +203,7 @@ export class CheckpointStore {
     try {
       const output = execFileSync("git", ["status", "--porcelain"], {
         cwd: this.workDir, timeout: 10000, encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       });
       return output
         .split("\n")
