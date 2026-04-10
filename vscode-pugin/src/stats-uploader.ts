@@ -14,9 +14,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { getGitAiBinary } from "./utils/binary-path";
+import { calculateCommitStats } from "./attribution/stats-calculator";
 
-const REQUEST_TIMEOUT_MS = 10_000;
-const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 10_000;const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 2_000;
 const NOTE_RETRY_COUNT = 3;
 const NOTE_RETRY_DELAY_MS = 2_000;
@@ -70,7 +70,41 @@ export async function uploadCommitStats(
   const binary = getGitAiBinary();
 
   try {
-    const commitStats = await queryCommitStatsWithRetry(binary, workspaceDir, commitSha);
+    // 优先使用内置归属追踪计算 stats
+    let commitStats: CommitStats | null = null;
+    try {
+      const native = calculateCommitStats(workspaceDir, commitSha);
+      // 转换为 snake_case 格式（兼容 git-ai CLI 输出）
+      commitStats = {
+        human_additions: native.humanAdditions,
+        mixed_additions: native.mixedAdditions,
+        ai_additions: native.aiAdditions,
+        ai_accepted: native.aiAccepted,
+        total_ai_additions: native.totalAiAdditions,
+        total_ai_deletions: native.totalAiDeletions,
+        time_waiting_for_ai: 0,
+        git_diff_added_lines: native.gitDiffAddedLines,
+        git_diff_deleted_lines: native.gitDiffDeletedLines,
+        tool_model_breakdown: Object.fromEntries(
+          Object.entries(native.toolModelBreakdown).map(([k, v]) => [k, {
+            ai_additions: v.aiAdditions,
+            mixed_additions: v.mixedAdditions,
+            ai_accepted: v.aiAccepted,
+            total_ai_additions: v.totalAiAdditions,
+            total_ai_deletions: v.totalAiDeletions,
+            time_waiting_for_ai: 0,
+          }])
+        ),
+      };
+    } catch (err) {
+      console.log(`[git-ai-kiro] Native stats failed, falling back to git-ai CLI: ${err}`);
+    }
+
+    // fallback: 使用 git-ai CLI
+    if (!commitStats) {
+      commitStats = await queryCommitStatsWithRetry(binary, workspaceDir, commitSha);
+    }
+
     if (!commitStats) {
       console.log(`[git-ai-kiro] No stats for commit ${commitSha.slice(0, 8)}, skipping`);
       return;

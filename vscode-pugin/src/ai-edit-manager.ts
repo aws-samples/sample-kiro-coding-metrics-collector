@@ -7,6 +7,7 @@ import { getGitAiBinary } from "./utils/binary-path";
 import { MIN_GIT_AI_VERSION, GIT_AI_INSTALL_DOCS_URL } from "./consts";
 import { getGitRepoRoot } from "./utils/git-api";
 import { shouldSkipLegacyCopilotHooks } from "./utils/vscode-hooks";
+import { CheckpointStore } from "./attribution/checkpoint-store";
 
 export class AIEditManager {
   private workspaceBaseStoragePath: string | null = null;
@@ -39,6 +40,9 @@ export class AIEditManager {
   private readonly KIRO_AI_EDIT_COOLDOWN_MS = 15_000; // 15 秒内视为 AI 编辑
   private kiroSessionId: string = `kiro-${Date.now()}`; // Kiro agent session ID
   private kiroAgentActive = false; // Kiro agent 是否正在活跃
+
+  // 内置归属追踪（替代 git-ai CLI）
+  private checkpointStores = new Map<string, CheckpointStore>();
   constructor(context: vscode.ExtensionContext) {
     this.legacyCopilotHooksEnabled = !shouldSkipLegacyCopilotHooks(vscode.version);
     if (!this.legacyCopilotHooksEnabled) {
@@ -206,6 +210,60 @@ export class AIEditManager {
     return true;
   }
 
+  /** 获取或创建 git 仓库的 CheckpointStore */
+  private getCheckpointStore(gitRoot: string): CheckpointStore {
+    let store = this.checkpointStores.get(gitRoot);
+    if (!store) {
+      store = new CheckpointStore(gitRoot);
+      this.checkpointStores.set(gitRoot, store);
+    }
+    return store;
+  }
+
+  /**
+   * 使用内置归属追踪执行 checkpoint（不依赖 git-ai CLI）
+   */
+  private executeCheckpointNative(
+    kind: "human" | "ai_agent",
+    filePaths: string[],
+    authorId: string
+  ): void {
+    // 按 git 仓库分组
+    const repoFiles = new Map<string, string[]>();
+    for (const fp of filePaths) {
+      const gitRoot = this.findGitRoot(fp);
+      if (!gitRoot) continue;
+      const list = repoFiles.get(gitRoot) || [];
+      list.push(fp);
+      repoFiles.set(gitRoot, list);
+    }
+
+    for (const [gitRoot, files] of repoFiles) {
+      try {
+        const store = this.getCheckpointStore(gitRoot);
+        store.executeCheckpoint(kind, authorId, files);
+      } catch (err) {
+        console.error(`[git-ai-kiro] Native checkpoint failed for ${gitRoot}:`, err);
+      }
+    }
+  }
+
+  /** 从文件路径查找 git 仓库根目录 */
+  private findGitRoot(filePath: string): string | null {
+    try {
+      const root = getGitRepoRoot(vscode.Uri.file(filePath));
+      if (root) return root;
+    } catch { /* */ }
+    let dir = path.dirname(filePath);
+    for (let i = 0; i < 20; i++) {
+      if (fs.existsSync(path.join(dir, ".git"))) return dir;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  }
+
   public handleOpenEvent(doc: vscode.TextDocument): void {
     console.log('[git-ai] AIEditManager: Open event detected for', doc);
 
@@ -358,32 +416,11 @@ export class AIEditManager {
     if (!checkpointTriggered) {
       // Kiro AI 编辑检测：检查文件是否被 Kiro Logs 标记为 AI 编辑
       if (this.isKiroAiEdited(filePath)) {
-        console.log('[git-ai] AIEditManager: Kiro AI edit detected for', filePath, '- triggering AI checkpoint');
+        console.log('[git-ai] AIEditManager: Kiro AI edit detected for', filePath, '- triggering native AI checkpoint');
 
-        const dirtyFiles = this.getDirtyFiles();
-        const savedFileDoc = vscode.workspace.textDocuments.find(doc =>
-          doc.uri.fsPath === filePath && doc.uri.scheme === "file"
-        );
-        if (savedFileDoc) {
-          dirtyFiles[filePath] = savedFileDoc.getText();
-        }
-
-        // 查找文件所在的 git 仓库
-        const gitRoot = getGitRepoRoot(vscode.Uri.file(filePath));
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))
-          || vscode.workspace.workspaceFolders?.[0];
-        const cwd = gitRoot || workspaceFolder?.uri.fsPath;
-
-        if (cwd) {
-          this.checkpoint("ai", JSON.stringify({
-            hook_event_name: "after_edit",
-            session_id: this.kiroSessionId,
-            edited_filepaths: [filePath],
-            workspace_folder: cwd,
-            dirty_files: dirtyFiles,
-          }));
-          checkpointTriggered = true;
-        }
+        // 使用内置归属追踪（不依赖 git-ai CLI）
+        this.executeCheckpointNative("ai_agent", [filePath], this.kiroSessionId);
+        checkpointTriggered = true;
 
         // 清除标记，避免重复触发
         this.kiroAiEditedFiles.delete(filePath);
@@ -391,7 +428,9 @@ export class AIEditManager {
     }
 
     if (!checkpointTriggered) {
-      console.log('[git-ai] AIEditManager: No AI pattern detected for', filePath, '- skipping checkpoint');
+      // 非 AI 编辑 → 触发 human checkpoint（记录人工修改覆盖 AI 行的情况）
+      console.log('[git-ai] AIEditManager: No AI pattern, triggering human checkpoint for', filePath);
+      this.executeCheckpointNative("human", [filePath], "human");
     }
 
     // Cleanup

@@ -1,25 +1,17 @@
 import * as vscode from "vscode";
 import { AIEditManager } from "./ai-edit-manager";
 import { detectIDEHost } from "./utils/host-kind";
-import { Config } from "./utils/config";
 import { BlameLensManager, registerBlameLensCommands } from "./blame-lens-manager";
 import { initBinaryResolver } from "./utils/binary-path";
-import { isGitAiInstalled, autoInstallGitAi } from "./git-ai-installer";
 import { CommitWatcher } from "./commit-watcher";
 
 export function activate(context: vscode.ExtensionContext) {
 
-  // In dev mode, resolve git-ai binary via login shell (debug host has stripped PATH)
   initBinaryResolver(context.extensionMode);
 
   const ideHostCfg = detectIDEHost();
 
   const aiEditManager = new AIEditManager(context);
-
-  // 检测并自动安装 git-ai
-  if (!isGitAiInstalled()) {
-    autoInstallGitAi();
-  }
 
   // Initialize and activate blame lens manager
   registerBlameLensCommands(context);
