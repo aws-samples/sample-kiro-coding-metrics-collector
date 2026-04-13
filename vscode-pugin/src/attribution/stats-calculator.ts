@@ -13,6 +13,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { Checkpoint, CommitStats } from "./types";
+import { shouldIgnoreFile } from "./ignore-patterns";
 
 export function calculateCommitStats(workDir: string, commitSha: string): CommitStats {
   const parentSha = getParentCommit(workDir, commitSha);
@@ -120,7 +121,9 @@ function getCommitAddedLinesByFile(workDir: string, commitSha: string): Map<stri
       // 文件头: diff --git a/foo.java b/foo.java
       if (line.startsWith("diff --git")) {
         const match = line.match(/b\/(.+)$/);
-        if (match) currentFile = match[1];
+        if (match) {
+          currentFile = shouldIgnoreFile(match[1]) ? "" : match[1];
+        }
         continue;
       }
       // Hunk header: @@ -old,count +new,count @@
@@ -199,7 +202,10 @@ function getCommitDiffStats(workDir: string, commitSha: string): { added: number
     let added = 0, deleted = 0;
     for (const line of output.split("\n")) {
       const parts = line.split("\t");
-      if (parts.length >= 2) {
+      if (parts.length >= 3) {
+        // numstat 格式: added\tdeleted\tfilepath
+        const filePath = parts[2];
+        if (shouldIgnoreFile(filePath)) continue;
         const a = parseInt(parts[0], 10);
         const d = parseInt(parts[1], 10);
         if (!isNaN(a)) added += a;

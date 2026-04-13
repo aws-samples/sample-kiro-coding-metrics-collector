@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { getGitRepoRoot } from "./utils/git-api";
 import { CheckpointStore } from "./attribution/checkpoint-store";
+import { KiroLogWatcher } from "./kiro-log-watcher";
 
 export class AIEditManager {
   private workspaceBaseStoragePath: string | null = null;
@@ -16,7 +17,7 @@ export class AIEditManager {
     count: number;
     uri: vscode.Uri;
   }>();
-  private readonly SAVE_EVENT_DEBOUNCE_WINDOW_MS = 300;
+  private readonly SAVE_EVENT_DEBOUNCE_WINDOW_MS = 1500; // 1.5 秒，等待 Kiro Logs 文件轮询
   private readonly HUMAN_CHECKPOINT_DEBOUNCE_MS = 500;
   private readonly HUMAN_CHECKPOINT_CLEANUP_INTERVAL_MS = 60000; // 1 minute
   private readonly MAX_SNAPSHOT_AGE_MS = 10_000; // 10 seconds; used to avoid triggering AI checkpoints on stale snapshots
@@ -35,6 +36,10 @@ export class AIEditManager {
 
   // 内置归属追踪（替代 git-ai CLI）
   private checkpointStores = new Map<string, CheckpointStore>();
+
+  // Kiro Logs 文件监听器
+  private kiroLogWatcher: KiroLogWatcher;
+
   constructor(context: vscode.ExtensionContext) {
     if (context.storageUri?.fsPath) {
       this.workspaceBaseStoragePath = path.dirname(context.storageUri.fsPath);
@@ -47,12 +52,17 @@ export class AIEditManager {
     this.cleanupTimer = setInterval(() => {
       this.cleanupOldCheckpointEntries();
     }, this.HUMAN_CHECKPOINT_CLEANUP_INTERVAL_MS);
+
+    // 启动 Kiro Logs 文件监听器
+    this.kiroLogWatcher = new KiroLogWatcher();
+    this.kiroLogWatcher.start((line) => this.handleKiroLogLine(line));
   }
 
   public dispose(): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
+    this.kiroLogWatcher.stop();
     for (const timer of this.stableContentTimers.values()) {
       clearTimeout(timer);
     }
@@ -107,12 +117,6 @@ export class AIEditManager {
   public handleContentChangeEvent(event: vscode.TextDocumentChangeEvent): void {
     const doc = event.document;
 
-    // 检测 Kiro Logs output 文档的变更 → 识别 AI 编辑
-    if (doc.uri.scheme === "output" && doc.uri.fsPath.includes("Kiro Logs")) {
-      this.handleKiroLogsChange(event);
-      return;
-    }
-
     if (doc.uri.scheme !== "file") {
       return;
     }
@@ -135,47 +139,31 @@ export class AIEditManager {
   }
 
   /**
-   * 处理 Kiro Logs 文档变更，从日志中提取 AI 编辑信息。
-   *
-   * Kiro agent 写文件时会产生以下日志序列：
-   *   [AgentIterator] Syncing...{filePath}  → agent 开始处理文件
-   *   [WriteFile] completed...{filePath}    → 文件写入完成
-   *
-   * 通过解析这些日志，精确标记哪些文件是 AI 编辑的。
+   * 处理 Kiro Logs 的单行日志（来自文件监听器）
    */
-  private handleKiroLogsChange(event: vscode.TextDocumentChangeEvent): void {
-    for (const change of event.contentChanges) {
-      const text = change.text;
-      if (!text) continue;
-
-      // 检测 agent 活跃状态
-      if (text.includes("[AgentIterator]")) {
-        if (!this.kiroAgentActive) {
-          this.kiroAgentActive = true;
-          this.kiroSessionId = `kiro-${Date.now()}`;
-          console.log('[kiro-ai-coverage] Kiro agent 开始活跃, session:', this.kiroSessionId);
-        }
+  private handleKiroLogLine(line: string): void {
+    // 检测 agent 活跃状态
+    if (line.includes("[AgentIterator]")) {
+      if (!this.kiroAgentActive) {
+        this.kiroAgentActive = true;
+        this.kiroSessionId = `kiro-${Date.now()}`;
+        console.log('[kiro-ai-coverage] Kiro agent 开始活跃, session:', this.kiroSessionId);
       }
+    }
 
-      // 检测文件写入完成 → 标记为 AI 编辑
-      // 日志格式: "... [WriteFile] completed writing to /path/to/file"
-      // 或: "... [WriteFile] completed /path/to/file"
-      const writeFileMatch = text.match(/\[WriteFile\][^\n]*?(\/[^\s\n"']+)/);
-      if (writeFileMatch) {
-        const filePath = writeFileMatch[1].trim();
-        this.kiroAiEditedFiles.set(filePath, Date.now());
-        console.log('[kiro-ai-coverage] Kiro AI 写入文件:', filePath);
-        // 注意：不在这里触发 human checkpoint！
-        // [WriteFile] completed 是在文件写入完成后才记录的，
-        // 此时文件已经包含 AI 修改，human checkpoint 会记录错误的内容。
-      }
+    // 检测文件写入完成 → 精确标记具体文件
+    const writeMatch = line.match(/\[(WriteFile|ReplaceInFile|StringReplace|EditFile)\][^\n]*?(\/[^\s\n"']+)/);
+    if (writeMatch) {
+      const filePath = writeMatch[2].trim();
+      this.kiroAiEditedFiles.set(filePath, Date.now());
+      console.log('[kiro-ai-coverage] Kiro AI 写入文件:', filePath, '(via', writeMatch[1] + ')');
+    }
 
-      // 检测 agent 结束
-      if (text.includes("[SupervisedDiffSync]") || text.includes("activeExecution\":false")) {
-        if (this.kiroAgentActive) {
-          this.kiroAgentActive = false;
-          console.log('[kiro-ai-coverage] Kiro agent 结束活跃');
-        }
+    // 检测 agent 结束
+    if (line.includes("[SupervisedDiffSync]") || line.includes("activeExecution\":false")) {
+      if (this.kiroAgentActive) {
+        this.kiroAgentActive = false;
+        console.log('[kiro-ai-coverage] Kiro agent 结束活跃');
       }
     }
   }

@@ -2,7 +2,7 @@
   "name": "kiro-ai-coverage-collector",
   "displayName": "Kiro AI Coverage Collector",
   "description": "Track and report AI vs human code contributions in Kiro IDE.",
-  "version": "0.7.1",
+  "version": "0.7.4",
   "publisher": "kiro-ai-coverage-collector",
   "repository": {
     "type": "git",

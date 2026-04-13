@@ -13,6 +13,7 @@ import { execFileSync } from "child_process";
 import { Checkpoint, CheckpointEntry, LineAttribution, CheckpointKind } from "./types";
 import { updateAttributions } from "./attribution-tracker";
 import { countChanges } from "./line-diff";
+import { shouldIgnoreFile } from "./ignore-patterns";
 
 export class CheckpointStore {
   private readonly gitDir: string;
@@ -110,6 +111,9 @@ export class CheckpointStore {
       // 获取所有有变更的文件
       files = this.getChangedFiles();
     }
+
+    // 过滤工程化目录
+    files = files.filter(f => !shouldIgnoreFile(f));
 
     if (files.length === 0) return null;
 
