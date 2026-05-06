@@ -1,0 +1,128 @@
+version: "3"
+tasks:
+  # CLI
+  build:
+    desc: Build the project in release mode (native Apple Silicon)
+    cmds:
+      - cargo build --release
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+    generates:
+      - target/release/git-ai-cli
+  build-debug:
+    desc: Build the project in debug mode (native Apple Silicon)
+    cmds:
+      - cargo build
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+    generates:
+      - target/debug/git-ai-cli
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+
+  release:local:
+    desc: Build release and install to user bin directory
+    deps: [build]
+    cmds:
+      - cp target/release/git-ai ~/.local/bin/git-ai
+      - chmod +x ~/.local/bin/git-ai
+
+  debug:local:
+    desc: Build release and install to user bin directory
+    deps: [build-debug]
+    cmds:
+      - cp target/debug/git-ai ~/.local/bin/git-ai
+      - chmod +x ~/.local/bin/git-ai
+
+  test:e2e:
+    desc: Run the end-to-end tests with debug build
+    deps: [build-debug]
+    cmds:
+      - bats tests/e2e/user-scenarios.bats
+
+  test:e2e:release:
+    desc: Run the end-to-end tests with release build
+    deps: [build]
+    cmds:
+      - bats tests/e2e/user-scenarios.bats
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - cargo test
+
+  lint:
+    desc: Run cargo check and clippy with warnings as errors
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - cargo bench
+
+  doc:
+    desc: Build documentation with warnings as errors
+    cmds:
+      - cargo doc --no-deps
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+
+  format:
+    desc: Format code with rustfmt
+    cmds:
+      - cargo fmt
+
+  format:check:
+    desc: Check code formatting (CI)
+    cmds:
+      - cargo fmt -- --check
+
+  coverage:
+    desc: Run tests with coverage and show summary
+    cmds:
+      - cargo llvm-cov test --ignore-filename-regex='tests/.*|benches/.*|examples/.*'
+
+  coverage:html:
+    desc: Generate HTML coverage report and open in browser
+    cmds:
+      - cargo llvm-cov test --ignore-filename-regex='tests/.*|benches/.*|examples/.*' --html --open
+
+  coverage:lcov:
+    desc: Generate LCOV coverage report
+    cmds:
+      - cargo llvm-cov test --ignore-filename-regex='tests/.*|benches/.*|examples/.*' --lcov --output-path lcov.info
+
+  coverage:check:
+    desc: Run coverage and fail if below threshold
+    cmds:
+      - cargo llvm-cov test --ignore-filename-regex='tests/.*|benches/.*|examples/.*' --fail-under-lines {{.COVERAGE_THRESHOLD}}
+    vars:
+      COVERAGE_THRESHOLD: '{{.COVERAGE_THRESHOLD | default "50"}}'
+
+  update:
+    desc: Update dependencies
+    cmds:
+      - cargo update
+
+  all:
+    desc: Build, test, lint, and generate docs
+    deps: [build, test, lint, doc]
+
+  install:
+    desc: Install dependencies using Cargo
+    cmds:
+      - cargo install --path .
+  fuzz:
+    desc: Run fuzz testing (requires nightly)
+    cmds:
+      - cargo +nightly fuzz run fuzz_checkpoint -- -max_total_time=60
+
+  miri:
+    desc: Run miri for undefined behavior detection (requires nightly)
+    cmds:
+      - cargo +nightly miri test --lib

@@ -1,0 +1,95 @@
+{
+  "name": "git-ai-kiro",
+  "displayName": "git-ai for Kiro",
+  "description": "Track AI-generated code in Kiro IDE with git-ai attribution.",
+  "version": "0.1.2",
+  "publisher": "git-ai",
+  "icon": "git-ai.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/git-ai-project/git-ai"
+  },
+  "engines": {
+    "vscode": ">=1.99.3",
+    "node": ">=20.18.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "git-ai for Kiro",
+      "properties": {
+        "gitai.kiro.enableCheckpointLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable notifications when AI checkpoints are created."
+        },
+        "gitai.kiro.ignorePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            "dist",
+            "build",
+            "out",
+            ".next",
+            "target",
+            "vendor",
+            "logs",
+            "coverage",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "env",
+            ".mypy_cache",
+            ".pytest_cache",
+            "site-packages",
+            "pkg",
+            "bin",
+            "*.lock",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "Pipfile.lock",
+            "poetry.lock",
+            "go.sum",
+            "*.min.js",
+            "*.min.css",
+            "*.map",
+            "*.pyc",
+            "*.pyo"
+          ],
+          "description": "File and directory patterns to exclude from AI attribution tracking and stats. Patterns are matched against relative file paths."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "vitest --run",
+    "lint": "eslint src",
+    "build:binary": "cargo build --release --manifest-path ../../Cargo.toml && node scripts/copy-binary.js",
+    "package:local": "npm run build:binary && npm run compile && npx vsce package",
+    "package:darwin-arm64": "npm run build:binary && npm run compile && npx vsce package --target darwin-arm64",
+    "package:win32-x64": "npm run build:binary && npm run compile && npx vsce package --target win32-x64",
+    "package:all": "npm run package:darwin-arm64 && npm run package:win32-x64"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/vscode": "1.99.1",
+    "@vscode/vsce": "3.7.1",
+    "eslint": "^9.25.1",
+    "fast-check": "^4.6.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
+  }
+}

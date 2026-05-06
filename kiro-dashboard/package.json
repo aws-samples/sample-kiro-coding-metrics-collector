@@ -1,0 +1,25 @@
+{
+  "name": "kiro-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "git-ai stats ingest API and dashboard",
+  "scripts": {
+    "start": "node src/main.js",
+    "start:ingest": "node src/ingest.js",
+    "start:dashboard": "node src/dashboard.js",
+    "test": "vitest --run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudtrail": "^3.1035.0",
+    "@aws-sdk/client-identitystore": "^3.1030.0",
+    "@aws-sdk/client-s3": "^3.1030.0",
+    "better-sqlite3": "^12.8.0"
+  },
+  "devDependencies": {
+    "fast-check": "^4.6.0",
+    "vitest": "^4.1.4"
+  }
+}

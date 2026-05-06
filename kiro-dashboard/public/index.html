@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>git-ai Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117; color: #c9d1d9; padding: 24px;
+    }
+    h1 { font-size: 24px; color: #58a6ff; margin-bottom: 16px; }
+    /* Tabs */
+    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #30363d; }
+    .tab {
+      padding: 10px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+      color: #8b949e; border-bottom: 2px solid transparent; transition: all 0.2s;
+    }
+    .tab:hover { color: #c9d1d9; }
+    .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    /* Cards */
+    .cards {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 16px; margin-bottom: 32px;
+    }
+    .card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 20px; cursor: pointer; transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #58a6ff; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .repo-name { font-size: 18px; font-weight: 600; color: #58a6ff; }
+    .badge { font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 12px; background: #1f6feb33; color: #58a6ff; }
+    .card-meta { font-size: 13px; color: #8b949e; margin-bottom: 12px; }
+    .card-meta span { margin-right: 16px; }
+    .bar-container { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+    .bar-fill { height: 100%; border-radius: 4px; }
+    .bar-human { background: #3fb950; } .bar-ai { background: #58a6ff; } .bar-mixed { background: #d29922; }
+    .stats-row { display: flex; gap: 16px; font-size: 13px; color: #8b949e; }
+    .stats-row .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+    .dot-human { background: #3fb950; } .dot-ai { background: #58a6ff; } .dot-mixed { background: #d29922; }
+    /* Modal */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: flex-start; padding-top: 60px; }
+    .modal-overlay.active { display: flex; }
+    .modal { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 90%; max-width: 800px; max-height: 80vh; overflow-y: auto; padding: 24px; }
+    .modal h2 { color: #58a6ff; margin-bottom: 16px; font-size: 20px; }
+    .modal-close { float: right; background: none; border: none; color: #8b949e; font-size: 20px; cursor: pointer; }
+    .modal-close:hover { color: #c9d1d9; }
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #21262d; }
+    th { color: #8b949e; font-weight: 500; }
+    .section-title { font-size: 15px; font-weight: 600; color: #c9d1d9; margin: 20px 0 8px; }
+    .empty { text-align: center; color: #8b949e; padding: 60px 0; font-size: 16px; }
+    .refresh-btn { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .refresh-btn:hover { border-color: #58a6ff; }
+    .subtitle { color: #8b949e; margin-bottom: 16px; font-size: 14px; }
+    .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    #search-input {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 6px 14px; border-radius: 6px; font-size: 13px; outline: none; width: 240px;
+    }
+    #search-input::placeholder { color: #8b949e; }
+    #search-input:focus { border-color: #58a6ff; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h1>git-ai Dashboard</h1>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('coverage')">项目覆盖率</div>
+    <div class="tab" onclick="switchTab('users')">用户管理</div>
+  </div>
+
+  <!-- Tab 1: 项目覆盖率 -->
+  <div id="panel-coverage" class="tab-panel active">
+    <p class="subtitle">AI 代码归属追踪 — 各仓库统计概览</p>
+    <div class="toolbar">
+      <button class="refresh-btn" onclick="loadRepos()">刷新</button>
+      <input id="search-input" placeholder="搜索仓库...">
+    </div>
+    <div id="app" class="cards"></div>
+  </div>
+
+  <!-- Tab 2: 用户管理 -->
+  <div id="panel-users" class="tab-panel">
+    <p class="subtitle">IAM Identity Center 用户 + 活跃 Session / 插件覆盖率 + Credit 用量</p>
+    <button class="refresh-btn" onclick="loadUsers()">刷新</button>
+    <div id="users-table"></div>
+  </div>
+
+  <!-- 项目详情弹窗 -->
+  <div class="modal-overlay" id="modal" onclick="closeModal(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="document.getElementById('modal').classList.remove('active')">&times;</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script>
+    // ==================== 安全工具函数 ====================
+    /** HTML 转义，防止 XSS */
+    function escapeHtml(str) {
+      if (str == null) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    /** 安全地设置元素的 HTML 内容（通过 DOMPurify 净化，不使用 innerHTML） */
+    function safeSetHtml(el, html) {
+      var clean = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true });
+      el.textContent = '';
+      el.appendChild(clean);
+    }
+
+    // ==================== Tab 切换 ====================
+    function switchTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelector(`#panel-${name}`).classList.add('active');
+      const tabs = document.querySelectorAll('.tab');
+      if (name === 'coverage') { tabs[0].classList.add('active'); loadRepos(); }
+      else { tabs[1].classList.add('active'); loadUsers(); }
+    }
+
+    // ==================== 项目覆盖率 ====================
+    let allRepos = [];
+
+    async function loadRepos() {
+      const app = document.getElementById("app");
+      try {
+        const res = await fetch("/api/repos");
+        allRepos = await res.json();
+        renderCards(allRepos);
+      } catch (err) {
+        safeSetHtml(app, '<div class="empty">加载失败: ' + escapeHtml(err.message) + '</div>');
+      }
+    }
+
+    function renderCards(repos) {
+      const app = document.getElementById("app");
+      if (repos.length === 0) { app.textContent = ''; const el = document.createElement('div'); el.className = 'empty'; el.textContent = '无匹配仓库'; app.appendChild(el); return; }
+      safeSetHtml(app, repos.map(renderCard).join(""));
+    }
+
+    function handleSearch() {
+      const kw = document.getElementById("search-input").value.trim().toLowerCase();
+      renderCards(kw === '' ? allRepos : allRepos.filter(r => r.repo_name.toLowerCase().includes(kw)));
+    }
+
+    function renderCard(repo) {
+      const ai = repo.ai_additions || 0, human = repo.human_additions || 0, mixed = repo.mixed_additions || 0;
+      const total = ai + human - mixed;
+      const aiContrib = ai - mixed * 0.5;
+      const aiPct = total > 0 ? (aiContrib / total * 100).toFixed(1) : "0.0";
+      const humanPct = total > 0 ? ((total - aiContrib) / total * 100).toFixed(1) : "0.0";
+      const safeRepoName = escapeHtml(repo.repo_name);
+      return `
+        <div class="card" onclick="showDetail('${safeRepoName}')">
+          <div class="card-header">
+            <span class="repo-name">${safeRepoName}</span>
+            <span class="badge">AI ${escapeHtml(aiPct)}%</span>
+          </div>
+          <div class="card-meta">
+            <span>${escapeHtml(repo.commit_count || 0)} 次提交</span>
+            <span>${escapeHtml(repo.user_count || 0)} 位开发者</span>
+            <span>共 ${escapeHtml(total)} 行</span>
+          </div>
+          <div class="bar-container"><div style="display:flex;height:100%">
+            <div class="bar-fill bar-human" style="width:${parseFloat(humanPct)}%"></div>
+            <div class="bar-fill bar-ai" style="width:${parseFloat(aiPct)}%"></div>
+          </div></div>
+          <div class="stats-row">
+            <span><span class="dot dot-human"></span>人类 ${escapeHtml(human)} (${escapeHtml(humanPct)}%)</span>
+            <span><span class="dot dot-ai"></span>AI ${escapeHtml(ai)} (${escapeHtml(aiPct)}%)</span>
+            <span><span class="dot dot-mixed"></span>其中混合 ${escapeHtml(mixed)}</span>
+          </div>
+        </div>`;
+    }
+
+    async function showDetail(repoName) {
+      const modal = document.getElementById("modal");
+      const content = document.getElementById("modal-content");
+      content.textContent = "加载中...";
+      modal.classList.add("active");
+      try {
+        const [aggRes, recordsRes] = await Promise.all([
+          fetch("/api/repos/" + encodeURIComponent(repoName) + "/aggregate"),
+          fetch("/api/repos/" + encodeURIComponent(repoName)),
+        ]);
+        const agg = await aggRes.json(), records = await recordsRes.json();
+        if (!agg || agg.error) { content.textContent = ''; const el = document.createElement('div'); el.className = 'empty'; el.textContent = '无数据'; content.appendChild(el); return; }
+        let html = `<h2>${escapeHtml(repoName)}</h2>`;
+        const t = agg.totals || {};
+        const total = (t.human_additions||0) + (t.ai_additions||0) - (t.mixed_additions||0);
+        const aiContrib = (t.ai_additions||0) - (t.mixed_additions||0) * 0.5;
+        const aiPct = total > 0 ? (aiContrib / total * 100).toFixed(1) + "%" : "-";
+        html += '<div class="section-title">汇总统计</div><table>';
+        html += row("提交总数", t.commit_count) + row("人类编写行数", t.human_additions);
+        html += row("AI 生成行数", t.ai_additions) + row("混合归属行数", t.mixed_additions);
+        html += row("AI 代码占比", aiPct) + row("AI 原样接受行数", t.ai_accepted);
+        html += row("Git diff 新增行", t.git_diff_added_lines) + row("Git diff 删除行", t.git_diff_deleted_lines);
+        html += row("AI 删除行", t.ai_deletions || 0) + row("人工删除行", t.human_deletions || 0);
+        html += row("等待 AI 时间", formatDuration(t.time_waiting_for_ai)) + '</table>';
+        // AI ratio trend chart
+        html += '<div class="section-title">AI 占比趋势</div><div id="ai-ratio-chart"></div>';
+        // By user
+        const users = agg.by_user || {}, userKeys = Object.keys(users);
+        if (userKeys.length > 0) {
+          html += '<div class="section-title">按开发者</div>';
+          html += '<table><tr><th>用户</th><th>人类行</th><th>AI 行</th><th>混合</th><th>AI 占比</th><th>提交数</th><th>等待时间</th></tr>';
+          for (const key of userKeys) {
+            const u = users[key], name = u.user_name || u.user_email || key;
+            const uT = (u.human_additions||0) + (u.ai_additions||0) - (u.mixed_additions||0);
+            const uAiContrib = (u.ai_additions||0) - (u.mixed_additions||0) * 0.5;
+            const uP = uT > 0 ? (uAiContrib / uT * 100).toFixed(1) + "%" : "-";
+            html += `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(u.human_additions)}</td><td>${escapeHtml(u.ai_additions)}</td><td>${escapeHtml(u.mixed_additions)}</td><td>${escapeHtml(uP)}</td><td>${escapeHtml(u.commit_count)}</td><td>${escapeHtml(formatDuration(u.time_waiting_for_ai))}</td></tr>`;
+          }
+          html += '</table>';
+        }
+        // Recent commits
+        if (Array.isArray(records) && records.length > 0) {
+          html += '<div class="section-title">最近提交 (最多 20 条)</div>';
+          html += '<table><tr><th>时间</th><th>用户</th><th>提交</th><th>人类行</th><th>AI 行</th><th>AI 占比</th></tr>';
+          for (const r of records.slice(0, 20)) {
+            const cs = r.commit_stats || {};
+            const rT = (cs.human_additions||0) + (cs.ai_additions||0);
+            const rP = rT > 0 ? ((cs.ai_additions||0) / rT * 100).toFixed(1) + "%" : "-";
+            html += `<tr><td>${escapeHtml(r.reported_at ? new Date(r.reported_at).toLocaleString("zh-CN") : "-")}</td><td>${escapeHtml(r.user_name||"-")}</td><td>${escapeHtml((r.commit_sha||"").slice(0,8))}</td><td>${escapeHtml(cs.human_additions||0)}</td><td>${escapeHtml(cs.ai_additions||0)}</td><td>${escapeHtml(rP)}</td></tr>`;
+          }
+          html += '</table>';
+        }
+        safeSetHtml(content, html);
+        // Render AI ratio chart
+        try {
+          const chartRes = await fetch("/api/repos/" + encodeURIComponent(repoName) + "/ai-ratio-history");
+          const chartData = await chartRes.json();
+          const cc = document.getElementById("ai-ratio-chart");
+          if (cc) renderAiRatioChart(cc, chartData);
+        } catch { const cc = document.getElementById("ai-ratio-chart"); if (cc) { cc.textContent = ''; const el = document.createElement('div'); el.style.cssText = 'color:#8b949e;text-align:center;padding:20px 0;'; el.textContent = '图表加载失败'; cc.appendChild(el); } }
+      } catch (err) { safeSetHtml(content, '<div class="empty">加载失败: ' + escapeHtml(err.message) + '</div>'); }
+    }
+
+    function renderAiRatioChart(container, data) {
+      if (!data || data.length < 2) { container.textContent = ''; const el = document.createElement('div'); el.style.cssText = 'color:#8b949e;text-align:center;padding:20px 0;'; el.textContent = '数据不足，暂无趋势图'; container.appendChild(el); return; }
+      if (typeof Chart === 'undefined') { container.textContent = ''; const el = document.createElement('div'); el.style.cssText = 'color:#8b949e;text-align:center;padding:20px 0;'; el.textContent = '图表加载失败'; container.appendChild(el); return; }
+      const canvas = document.createElement('canvas');
+      container.appendChild(canvas);
+      new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: data.map(d => new Date(d.recorded_at).toLocaleDateString('zh-CN')),
+          datasets: [{ label: 'AI 占比', data: data.map(d => (d.ai_ratio * 100).toFixed(1)), borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)', fill: true, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#58a6ff' }]
+        },
+        options: {
+          responsive: true,
+          plugins: { tooltip: { callbacks: { label: (ctx) => 'AI 占比: ' + ctx.parsed.y + '%' } }, legend: { display: false } },
+          scales: { x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }, y: { min: 0, max: 100, ticks: { color: '#8b949e', callback: v => v + '%' }, grid: { color: '#21262d' } } }
+        }
+      });
+    }
+
+    // ==================== 用户管理 ====================
+    async function loadUsers() {
+      const container = document.getElementById("users-table");
+      container.textContent = '';
+      const loadingEl = document.createElement('div');
+      loadingEl.className = 'empty';
+      loadingEl.textContent = '加载中...';
+      container.appendChild(loadingEl);
+      try {
+        const res = await fetch("/api/users");
+        const data = await res.json();
+        if (data.error) { container.textContent = ''; const el = document.createElement('div'); el.className = 'empty'; el.textContent = '错误: ' + data.error; container.appendChild(el); return; }
+        const users = data.users || [];
+        const summary = data.summary || {};
+        if (users.length === 0) { container.textContent = ''; const el = document.createElement('div'); el.className = 'empty'; el.textContent = '暂无用户数据'; container.appendChild(el); return; }
+        const pluginRatePct = (summary.totalPluginRate * 100).toFixed(1);
+        let html = `<div style="margin-bottom:12px;font-size:14px;color:#8b949e;">共 ${escapeHtml(summary.totalUsers)} 位用户，<span style="color:#58a6ff;">${escapeHtml(summary.totalSessions)} 个活跃 Session</span>，<span style="color:#3fb950;">${escapeHtml(summary.totalPlugins)} 个活跃插件</span>，总插件安装率 <span style="color:${summary.totalPluginRate >= 0.5 ? '#3fb950' : '#f85149'};">${escapeHtml(pluginRatePct)}%</span></div>`;
+        html += '<table><tr><th>Username</th><th>Display Name</th><th>Status</th><th>活跃 Session</th><th>活跃插件</th><th>插件覆盖率</th><th>已消耗 Credits(近1个月)</th><th>最后活跃</th></tr>';
+        for (const u of users) {
+          const coveragePct = (u.pluginCoverage * 100).toFixed(1);
+          const coverageColor = u.pluginCoverage >= 0.5 ? '#3fb950' : (u.pluginCoverage > 0 ? '#d29922' : '#8b949e');
+          const credits = u.totalCredits > 0 ? u.totalCredits.toFixed(2) : "-";
+          const lastActiveDate = u.updatedAt ? new Date(u.updatedAt) : null;
+          const lastActive = lastActiveDate && !isNaN(lastActiveDate.getTime()) ? lastActiveDate.toLocaleString("zh-CN") : "Unknown";
+          html += `<tr><td>${escapeHtml(u.userName)}</td><td>${escapeHtml(u.displayName)}</td><td>${escapeHtml(u.status)}</td><td>${escapeHtml(u.activeSessions)}</td><td>${escapeHtml(u.activePlugins)}</td><td><span style="color:${coverageColor};">${escapeHtml(coveragePct)}%</span></td><td>${escapeHtml(credits)}</td><td>${escapeHtml(lastActive)}</td></tr>`;
+        }
+        html += '</table>';
+        safeSetHtml(container, html);
+      } catch (err) { safeSetHtml(container, '<div class="empty">加载失败: ' + escapeHtml(err.message) + '</div>'); }
+    }
+
+    // ==================== 工具函数 ====================
+    function row(label, value) { return `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value ?? "-")}</td></tr>`; }
+    function formatDuration(s) { if (!s || s <= 0) return "-"; if (s < 60) return s + " 秒"; if (s < 3600) return (s/60).toFixed(1) + " 分钟"; return (s/3600).toFixed(1) + " 小时"; }
+    function closeModal(e) { if (e.target === e.currentTarget) document.getElementById("modal").classList.remove("active"); }
+
+    // 搜索绑定
+    document.getElementById("search-input").addEventListener("keydown", function(e) { if (e.key === "Enter") handleSearch(); });
+
+    // 默认加载第一个 tab
+    loadRepos();
+  </script>
+</body>
+</html>
