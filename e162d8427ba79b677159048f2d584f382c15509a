@@ -1,0 +1,23 @@
+kiro-dashboard/public/index.html
+  a65b7c9dcd38d099 104-115,136,142,157,159,161-162,165-167,170-171,174-176,184,192-193,217,229,241,245-246,266-270,274,277,279,287,291,295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "e162d8427ba79b677159048f2d584f382c15509a",
+  "prompts": {
+    "a65b7c9dcd38d099": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "dcc86590-bfaf-40e9-8423-069e22d50d03",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 45,
+      "total_deletions": 28,
+      "accepted_lines": 45,
+      "overriden_lines": 0
+    }
+  }
+}
