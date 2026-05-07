@@ -244,62 +244,111 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   "${binaryPath}" post-commit "$COMMIT_SHA" 2>/dev/null || true
   STATS=$("${binaryPath}" stats "$COMMIT_SHA" --json${ignoreArgs} 2>/dev/null)
   if [ -z "$STATS" ]; then exit 0; fi
-  # 计算精确的 ai_deletions / human_deletions
-  # 策略1: 从 authorship_note 中提取 AI prompt 的 total_deletions（AI 删除部分行时有 checkpoint）
-  # 策略2: 从 hunks 中统计有 prompt_id 的 deletion 行数（AI 删除整个文件时无 checkpoint，但被删行有 AI 归属）
-  # 取两者的较大值，cap 到 git_diff_deleted_lines
+
+  # --- 辅助函数：从 JSON 中提取数值字段（纯 shell 实现） ---
+  json_get_num() {
+    echo "$1" | grep -o "\\"$2\\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | grep -o '[0-9]*$'
+  }
+
+  # --- 计算精确的 ai_deletions / human_deletions ---
   DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json 2>/dev/null || echo "")
-  if [ -n "$DIFF_JSON" ] && command -v python3 >/dev/null 2>&1; then
-    STATS=$(python3 -c "
-import sys, json
-stats = json.loads(sys.argv[1])
-diff_data = json.loads(sys.argv[2])
-git_del = stats.get('git_diff_deleted_lines', 0)
-# 策略1: authorship_note 中 AI prompt 的 total_deletions
-ai_note_del = 0
-for c in diff_data.get('commits', {}).values():
-    note_str = c.get('authorship_note', '')
-    idx = note_str.find('---')
-    if idx >= 0:
-        note_str = note_str[idx+3:].strip()
-    try:
-        note = json.loads(note_str)
-        for p in note.get('prompts', {}).values():
-            tool = p.get('agent_id', {}).get('tool', '')
-            if tool and tool != 'human':
-                ai_note_del += p.get('total_deletions', 0)
-    except: pass
-# 策略2: hunks 中有 prompt_id 的 deletion 行数
-ai_hunk_del = 0
-for h in diff_data.get('hunks', []):
-    if h.get('hunk_kind') == 'deletion' and h.get('prompt_id'):
-        ai_hunk_del += h.get('end_line', 0) - h.get('start_line', 0) + 1
-ai_del = min(max(ai_note_del, ai_hunk_del), git_del)
-# 优先使用插件端计算的 AI 净删除行数（精确值）
-import os
-kiro_net_del_file = os.path.join(sys.argv[3]) if len(sys.argv) > 3 else ''
-kiro_net_del = 0
-if kiro_net_del_file:
-    try:
-        with open(kiro_net_del_file) as f:
-            kiro_net_del = int(f.read().strip()) or 0
-    except: pass
-if kiro_net_del > 0:
-    ai_del = min(kiro_net_del, git_del)
-stats['ai_deletions'] = ai_del
-stats['human_deletions'] = max(0, git_del - ai_del)
-# ai_additions 去除 mixed_additions（客户要求：ai_additions 只含纯 AI 行数）
-mixed = stats.get('mixed_additions', 0)
-stats['ai_additions'] = max(0, stats.get('ai_additions', 0) - mixed)
-# cap: ai_additions、ai_accepted、human_additions 不超过 git_diff_added_lines
-git_add = stats.get('git_diff_added_lines', 0)
-if git_add > 0:
-    stats['ai_additions'] = min(stats['ai_additions'], git_add)
-    stats['ai_accepted'] = min(stats.get('ai_accepted', 0), git_add)
-    stats['human_additions'] = min(stats.get('human_additions', 0), git_add)
-print(json.dumps(stats))
-" "$STATS" "$DIFF_JSON" "$REPO_ROOT/.git/ai/kiro_net_deletions" 2>/dev/null || echo "$STATS")
+  GIT_DEL=$(json_get_num "$STATS" "git_diff_deleted_lines")
+  GIT_DEL=\${GIT_DEL:-0}
+  AI_DEL=0
+
+  if [ -n "$DIFF_JSON" ]; then
+    # 策略1: authorship_note 中 AI prompt 的 total_deletions
+    # 提取所有 total_deletions 值（排除 human tool 的情况较复杂，此处取所有 prompt 的 total_deletions 之和）
+    AI_NOTE_DEL=0
+    # 从 diff JSON 中提取 prompts 下所有 total_deletions（排除 tool=human 的）
+    # 简化策略：提取所有 "total_deletions": N 的值求和
+    for d in $(echo "$DIFF_JSON" | grep -o '"total_deletions"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$'); do
+      AI_NOTE_DEL=$((AI_NOTE_DEL + d))
+    done
+
+    # 策略2: hunks 中有 prompt_id 的 deletion 行数
+    # 使用 awk 解析 hunks 数组中 hunk_kind=deletion 且有 prompt_id 的条目
+    AI_HUNK_DEL=$(echo "$DIFF_JSON" | awk '
+      BEGIN { total=0; in_hunk=0; is_del=0; has_prompt=0; start=0; end_l=0 }
+      /"hunk_kind"[[:space:]]*:[[:space:]]*"deletion"/ { is_del=1 }
+      /"prompt_id"[[:space:]]*:[[:space:]]*"[^"]+/ { has_prompt=1 }
+      /"start_line"[[:space:]]*:[[:space:]]*[0-9]/ { match($0, /[0-9]+/); start=substr($0, RSTART, RLENGTH)+0 }
+      /"end_line"[[:space:]]*:[[:space:]]*[0-9]/ { match($0, /[0-9]+/); end_l=substr($0, RSTART, RLENGTH)+0 }
+      /\\}/ {
+        if (is_del && has_prompt && end_l >= start) {
+          total += end_l - start + 1
+        }
+        is_del=0; has_prompt=0; start=0; end_l=0
+      }
+      END { print total }
+    ')
+    AI_HUNK_DEL=\${AI_HUNK_DEL:-0}
+
+    # 取两者较大值
+    if [ "$AI_NOTE_DEL" -gt "$AI_HUNK_DEL" ] 2>/dev/null; then
+      AI_DEL=$AI_NOTE_DEL
+    else
+      AI_DEL=$AI_HUNK_DEL
+    fi
   fi
+
+  # 优先使用插件端计算的 AI 净删除行数（精确值）
+  KIRO_NET_DEL_FILE="$REPO_ROOT/.git/ai/kiro_net_deletions"
+  KIRO_NET_DEL=0
+  if [ -f "$KIRO_NET_DEL_FILE" ]; then
+    KIRO_NET_DEL=$(cat "$KIRO_NET_DEL_FILE" 2>/dev/null | tr -d '[:space:]')
+    KIRO_NET_DEL=\${KIRO_NET_DEL:-0}
+  fi
+  if [ "$KIRO_NET_DEL" -gt 0 ] 2>/dev/null; then
+    AI_DEL=$KIRO_NET_DEL
+  fi
+
+  # cap AI_DEL 到 GIT_DEL
+  if [ "$AI_DEL" -gt "$GIT_DEL" ] 2>/dev/null; then
+    AI_DEL=$GIT_DEL
+  fi
+  HUMAN_DEL=$((GIT_DEL - AI_DEL))
+  if [ "$HUMAN_DEL" -lt 0 ] 2>/dev/null; then HUMAN_DEL=0; fi
+
+  # --- 调整 STATS JSON：注入 ai_deletions/human_deletions，调整 ai_additions ---
+  GIT_ADD=$(json_get_num "$STATS" "git_diff_added_lines")
+  GIT_ADD=\${GIT_ADD:-0}
+  MIXED=$(json_get_num "$STATS" "mixed_additions")
+  MIXED=\${MIXED:-0}
+  AI_ADD=$(json_get_num "$STATS" "ai_additions")
+  AI_ADD=\${AI_ADD:-0}
+  AI_ACCEPTED=$(json_get_num "$STATS" "ai_accepted")
+  AI_ACCEPTED=\${AI_ACCEPTED:-0}
+  HUMAN_ADD=$(json_get_num "$STATS" "human_additions")
+  HUMAN_ADD=\${HUMAN_ADD:-0}
+
+  # ai_additions 去除 mixed_additions（客户要求：ai_additions 只含纯 AI 行数）
+  AI_ADD=$((AI_ADD - MIXED))
+  if [ "$AI_ADD" -lt 0 ] 2>/dev/null; then AI_ADD=0; fi
+
+  # cap: 不超过 git_diff_added_lines
+  if [ "$GIT_ADD" -gt 0 ] 2>/dev/null; then
+    if [ "$AI_ADD" -gt "$GIT_ADD" ] 2>/dev/null; then AI_ADD=$GIT_ADD; fi
+    if [ "$AI_ACCEPTED" -gt "$GIT_ADD" ] 2>/dev/null; then AI_ACCEPTED=$GIT_ADD; fi
+    if [ "$HUMAN_ADD" -gt "$GIT_ADD" ] 2>/dev/null; then HUMAN_ADD=$GIT_ADD; fi
+  fi
+
+  # 使用 sed 注入/替换字段到 STATS JSON
+  STATS=$(echo "$STATS" | sed 's/"ai_additions"[[:space:]]*:[[:space:]]*[0-9]*/"ai_additions":'"$AI_ADD"'/')
+  STATS=$(echo "$STATS" | sed 's/"ai_accepted"[[:space:]]*:[[:space:]]*[0-9]*/"ai_accepted":'"$AI_ACCEPTED"'/')
+  STATS=$(echo "$STATS" | sed 's/"human_additions"[[:space:]]*:[[:space:]]*[0-9]*/"human_additions":'"$HUMAN_ADD"'/')
+  # 注入 ai_deletions 和 human_deletions（在最后一个 } 前插入）
+  if echo "$STATS" | grep -q '"ai_deletions"'; then
+    STATS=$(echo "$STATS" | sed 's/"ai_deletions"[[:space:]]*:[[:space:]]*[0-9]*/"ai_deletions":'"$AI_DEL"'/')
+  else
+    STATS=$(echo "$STATS" | sed 's/}$/,"ai_deletions":'"$AI_DEL"'}/')
+  fi
+  if echo "$STATS" | grep -q '"human_deletions"'; then
+    STATS=$(echo "$STATS" | sed 's/"human_deletions"[[:space:]]*:[[:space:]]*[0-9]*/"human_deletions":'"$HUMAN_DEL"'/')
+  else
+    STATS=$(echo "$STATS" | sed 's/}$/,"human_deletions":'"$HUMAN_DEL"'}/')
+  fi
+
   # 上报后清空 kiro_net_deletions
   rm -f "$REPO_ROOT/.git/ai/kiro_net_deletions" 2>/dev/null
   REPO_NAME=$(basename "$REPO_ROOT")
@@ -313,26 +362,18 @@ print(json.dumps(stats))
   PAYLOAD="{\\"repo_name\\":\\"$REPO_NAME\\",\\"repo_remote_url\\":\\"$REMOTE_URL\\",\\"branch\\":\\"$BRANCH\\",\\"commit_sha\\":\\"$COMMIT_SHA\\",\\"machine_id\\":\\"$MACHINE_ID\\",\\"user_name\\":\\"$USER_NAME\\",\\"user_email\\":\\"$USER_EMAIL\\",\\"reported_at\\":\\"$REPORTED_AT\\",\\"commit_stats\\":$STATS}"
   mkdir -p "$REPO_ROOT/.git/ai" 2>/dev/null
   echo "[stats] [$REPORTED_AT] $PAYLOAD" >> "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null
-  # 清理 15 天前的行
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c "
-import sys, os, re
-from datetime import datetime, timedelta, timezone
-f = sys.argv[1]
-try:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=15)
-    lines = open(f).readlines()
-    kept = []
-    for l in lines:
-        m = re.search(r'\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\]', l)
-        if not m: kept.append(l); continue
-        try:
-            ts = datetime.fromisoformat(m.group(1).replace('Z','+00:00'))
-            if ts >= cutoff: kept.append(l)
-        except: kept.append(l)
-    open(f,'w').writelines(kept)
-except: pass
-" "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null
+  # 清理 15 天前的行（纯 shell 实现）
+  LOG_FILE="$REPO_ROOT/.git/ai/last_upload_payload.json"
+  if [ -f "$LOG_FILE" ]; then
+    CUTOFF_DATE=$(date -u -v-15d +"%Y-%m-%d" 2>/dev/null || date -u -d "15 days ago" +"%Y-%m-%d" 2>/dev/null || echo "")
+    if [ -n "$CUTOFF_DATE" ]; then
+      awk -v cutoff="$CUTOFF_DATE" '
+        {
+          match($0, /\\[([0-9]{4}-[0-9]{2}-[0-9]{2})T/, arr)
+          if (arr[1] == "" || arr[1] >= cutoff) print
+        }
+      ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
+    fi
   fi
   curl -s -X POST "${statsUrl}" \\
     -H "Content-Type: application/json" \\
