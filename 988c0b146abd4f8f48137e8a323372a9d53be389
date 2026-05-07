@@ -1,0 +1,23 @@
+kiro-pugin/package.json
+  a65b7c9dcd38d099 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "988c0b146abd4f8f48137e8a323372a9d53be389",
+  "prompts": {
+    "a65b7c9dcd38d099": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "dcc86590-bfaf-40e9-8423-069e22d50d03",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
