@@ -1,0 +1,23 @@
+kiro-pugin/src/gitUtils.ts
+  a65b7c9dcd38d099 247-249,251-253,255-264,266-292,294-303,305-351,365-376
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "6d04cd46a1334a13f65e57aae168e73039e1c64d",
+  "prompts": {
+    "a65b7c9dcd38d099": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "dcc86590-bfaf-40e9-8423-069e22d50d03",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 486,
+      "total_deletions": 77,
+      "accepted_lines": 935,
+      "overriden_lines": 2
+    }
+  }
+}
