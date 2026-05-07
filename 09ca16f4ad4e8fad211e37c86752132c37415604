@@ -1,0 +1,23 @@
+git-ai-src/README.md
+  a65b7c9dcd38d099 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "09ca16f4ad4e8fad211e37c86752132c37415604",
+  "prompts": {
+    "a65b7c9dcd38d099": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "dcc86590-bfaf-40e9-8423-069e22d50d03",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 3664,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
