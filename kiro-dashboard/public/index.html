@@ -229,12 +229,15 @@
         // Recent commits
         if (Array.isArray(records) && records.length > 0) {
           html += '<div class="section-title">最近提交 (最多 20 条)</div>';
-          html += '<table><tr><th>时间</th><th>用户</th><th>提交</th><th>人类行</th><th>AI 行</th><th>AI 占比</th></tr>';
+          html += '<table><tr><th>时间</th><th>用户</th><th>提交</th><th>Commit Message</th><th>人类行</th><th>AI 行</th><th>AI 占比</th></tr>';
           for (const r of records.slice(0, 20)) {
             const cs = r.commit_stats || {};
             const rT = (cs.human_additions||0) + (cs.ai_additions||0);
             const rP = rT > 0 ? ((cs.ai_additions||0) / rT * 100).toFixed(1) + "%" : "-";
-            html += `<tr><td>${escapeHtml(r.reported_at ? new Date(r.reported_at).toLocaleString("zh-CN") : "-")}</td><td>${escapeHtml(r.user_name||"-")}</td><td>${escapeHtml((r.commit_sha||"").slice(0,8))}</td><td>${escapeHtml(cs.human_additions||0)}</td><td>${escapeHtml(cs.ai_additions||0)}</td><td>${escapeHtml(rP)}</td></tr>`;
+            const msg = r.commit_msg || "";
+            // 截断超过 80 字符的 commit message，鼠标悬停显示完整内容
+            const msgShort = msg.length > 80 ? msg.slice(0, 80) + "…" : msg;
+            html += `<tr><td>${escapeHtml(r.reported_at ? new Date(r.reported_at).toLocaleString("zh-CN") : "-")}</td><td>${escapeHtml(r.user_name||"-")}</td><td>${escapeHtml((r.commit_sha||"").slice(0,8))}</td><td title="${escapeHtml(msg)}">${escapeHtml(msgShort)}</td><td>${escapeHtml(cs.human_additions||0)}</td><td>${escapeHtml(cs.ai_additions||0)}</td><td>${escapeHtml(rP)}</td></tr>`;
           }
           html += '</table>';
         }

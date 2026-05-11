@@ -30,6 +30,7 @@ X-Idempotency-Key: <unique-key>
   "repo_remote_url": "git@github.com:user/repo.git",
   "branch": "main",
   "commit_sha": "6e7f6f94a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+  "commit_msg": "Add new feature X",
   "machine_id": "a3f2b8c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1",
   "user_name": "fqchen",
   "user_email": "fqchen@example.com",
@@ -70,6 +71,7 @@ X-Idempotency-Key: <unique-key>
 | `repo_remote_url` | string | 否 | `git remote get-url origin` 的值，本地仓库无 remote 时为空字符串 |
 | `branch` | string | 是 | 当前分支名，如 `main`、`feature/xxx` |
 | `commit_sha` | string | 是 | 本次 commit 的完整 SHA（40 字符） |
+| `commit_msg` | string | 否 | 本次 commit 的 subject（首行），由 `git log -1 --pretty=%s` 获取；便于在 dashboard 上识别提交用途 |
 | `machine_id` | string | 是 | 机器标识，由 hostname 的 SHA-256 哈希生成，用于区分不同开发机器 |
 | `user_name` | string | 否 | `git config user.name` 的值，未配置时为空字符串 |
 | `user_email` | string | 否 | `git config user.email` 的值，未配置时为空字符串 |

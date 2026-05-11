@@ -7,111 +7,149 @@ import * as http from "node:http";
 import * as vscode from "vscode";
 
 import { USER_SYNC_URL } from "./apiConfig";
+import { QClientLogWatcher } from "./qClientWatcher";
 
 const REQUEST_TIMEOUT_MS = 10_000;
-// 每 4 小时定时上报间隔（毫秒）
-const SYNC_INTERVAL_MS = 4 * 60 * 60 * 1000;
+/** userSync 间隔：距离上一次 userSync 超过这个时间才重新上报 */
+const SYNC_GAP_MS = 4 * 60 * 60 * 1000; // 4 小时
+/** 调试日志保留天数 */
+const LOG_RETENTION_DAYS = 15;
+/** 无法获取 email 时使用的占位符 */
+const UNKNOWN_EMAIL = "Unknown";
 
 interface UserSyncPayload {
   user_name: string;
   user_ip: string;
   hostname: string;
+  user_id?: string;
 }
 
-let cachedEmail = "";
-let cachedIp = "";
-let syncTimer: ReturnType<typeof setInterval> | null = null;
+let watcher: QClientLogWatcher | null = null;
+let inflight = false;
+/** 插件启动后是否从未 userSync 过，首次触发时为 true */
+let isFirst = true;
 
 /**
- * 插件启动时调用：获取用户 email、IP、Mac 地址，上报到 dashboard。
- * 首次立即上报，此后每小时定时上报。
+ * 插件启动时调用：
+ *   只监控 q-client.log，等待 Kiro 调用 GetUsageLimitsCommand 时再评估是否上报。
+ *
+ * userSync 的上报时机只有两个，都必须先由 q-client.log 中的 GetUsageLimitsCommand 事件触发，
+ * 再经过判断决定是否真正上报：
+ *   1. 插件本次启动后第一次被触发（isFirst=true）
+ *   2. 距离上次 userSync 超过 4 小时
  */
-export async function reportUserLogin(): Promise<void> {
-  // 首次立即上报
-  await doUserSync();
-
-  // 每小时定时上报
-  syncTimer = setInterval(() => {
-    doUserSync().catch((err) => {
-      console.warn(`[git-ai-kiro] userSync periodic failed: ${err}`);
-    });
-  }, SYNC_INTERVAL_MS);
-  console.log("[git-ai-kiro] userSync: scheduled every 4 hours");
+export function reportUserLogin(): void {
+  if (watcher) return;
+  isFirst = true;
+  watcher = new QClientLogWatcher((info) => maybeDoUserSync(info.userId));
+  watcher.start();
+  console.log("[git-ai-kiro] userSync: waiting for GetUsageLimitsCommand trigger");
 }
 
 /**
- * 停止定时上报（插件 deactivate 时调用）
+ * 停止监控（插件 deactivate 时调用）
  */
 export function stopUserSync(): void {
-  if (syncTimer) {
-    clearInterval(syncTimer);
-    syncTimer = null;
+  if (watcher) {
+    watcher.stop();
+    watcher = null;
+  }
+  isFirst = true;
+}
+
+/**
+ * 被 q-client.log 中的 GetUsageLimitsCommand 事件触发后调用。
+ * @param userId 从 q-client.log 中解析到的用户 userId（可能为空）
+ */
+async function maybeDoUserSync(userId: string): Promise<void> {
+  if (inflight) {
+    console.log(`[git-ai-kiro] userSync: already in progress, skip`);
+    return;
+  }
+  inflight = true;
+  try {
+    if (isFirst) {
+      console.log(`[git-ai-kiro] userSync: first trigger after extension start, uploading`);
+    } else {
+      const lastTs = getLastUserSyncTimestamp();
+      if (lastTs === null) {
+        console.log(`[git-ai-kiro] userSync: no previous userSync record found, uploading`);
+      } else {
+        const ageMs = Date.now() - lastTs;
+        if (ageMs < SYNC_GAP_MS) {
+          const ageMin = Math.floor(ageMs / 1000 / 60);
+          const remainMin = Math.floor((SYNC_GAP_MS - ageMs) / 1000 / 60);
+          console.log(`[git-ai-kiro] userSync: last sync ${ageMin}min ago, skip until ${remainMin}min later`);
+          return;
+        }
+        console.log(`[git-ai-kiro] userSync: last sync ${Math.floor(ageMs / 1000 / 60)}min ago, uploading`);
+      }
+    }
+
+    await doUserSync(userId);
+    isFirst = false;
+  } finally {
+    inflight = false;
   }
 }
 
 /**
- * 执行一次 userSync 上报
+ * 执行一次 userSync 上报。
+ *
+ * email 获取策略（精简后只有一条路径 + Unknown 兜底）：
+ *   1. 尝试 kiro-cli whoami
+ *   2. 失败则上报 Unknown + user_id，由 dashboard 端用 AWS SDK 解析
+ *
+ * user_id 规则：q-client.log 中的 userId 是 "d-<storeId>.<uuid>" 格式，
+ * 但 d-<storeId> 是 IAM Identity Store 的标识，对业务侧无用且属于敏感信息，
+ * 这里只上传点号后的 uuid 部分。dashboard 侧直接用该 uuid 匹配 IdC UserId。
  */
-async function doUserSync(): Promise<void> {
-  const email = await getUserEmail();
+async function doUserSync(userId: string): Promise<void> {
+  const email = getEmailFromKiroCli();
+  const effectiveEmail = email || UNKNOWN_EMAIL;
   const ip = getUserIp();
   const hn = os.hostname();
-  if (!email) {
-    console.log("[git-ai-kiro] userSync: cannot get user email, skipping");
-    return;
-  }
 
-  cachedEmail = email;
-  cachedIp = ip;
+  const cleanUserId = stripIdentityStorePrefix(userId);
 
-  const payload: UserSyncPayload = { user_name: email, user_ip: ip, hostname: hn };
+  const payload: UserSyncPayload = {
+    user_name: effectiveEmail,
+    user_ip: ip,
+    hostname: hn,
+  };
+  if (cleanUserId) payload.user_id = cleanUserId;
   console.log(`[git-ai-kiro] userSync payload: ${JSON.stringify(payload)} → ${USER_SYNC_URL}`);
 
-  // 追加到调试文件（所有发现的 git repo）
-  try {
-    const folders = vscode.workspace.workspaceFolders;
-    if (folders) {
-      const { findGitRoot, findGitReposInDir } = require("./gitUtils");
-      const wsPath = folders[0].uri.fsPath;
-      const repos: string[] = [];
-      const gitRoot = findGitRoot(wsPath);
-      if (gitRoot) {
-        repos.push(gitRoot);
-      } else {
-        repos.push(...findGitReposInDir(wsPath));
-      }
-      for (const repoPath of repos) {
-        const aiDir = path.join(repoPath, ".git", "ai");
-        if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir, { recursive: true });
-        const logFile = path.join(aiDir, "last_upload_payload.json");
-        // 追加带时间戳的记录
-        fs.appendFileSync(logFile, `[userSync] [${new Date().toISOString()}] ${JSON.stringify(payload)}\n`, "utf-8");
-        // 清理 15 天前的行
-        cleanOldLines(logFile, 15);
-      }
-    }
-  } catch { /* best effort */ }
+  writeDebugLog(payload);
 
   try {
     const status = await doPost(USER_SYNC_URL, "", JSON.stringify(payload));
-    console.log(`[git-ai-kiro] userSync: ${email} ip=${ip} hostname=${hn} HTTP ${status}`);
+    console.log(`[git-ai-kiro] userSync: ${effectiveEmail} ip=${ip} hostname=${hn} user_id=${cleanUserId || "(none)"} HTTP ${status}`);
   } catch (err) {
     console.warn(`[git-ai-kiro] userSync failed: ${err}`);
   }
 }
 
-// Credit 用量改由 dashboard 服务端从 S3 官方报告同步，插件不再上报
-
-// ==================== 获取用户 email ====================
+/**
+ * 去掉 q-client userId 里的 "d-<storeId>." 前缀，只保留 IdC UserId (UUID)。
+ * 已经是裸 UUID 的输入原样返回。
+ */
+function stripIdentityStorePrefix(raw: string): string {
+  if (!raw) return "";
+  const dotIdx = raw.indexOf(".");
+  if (dotIdx < 0) return raw;
+  // 只有形如 "d-<storeId>.<rest>" 的前缀需要剥离
+  const prefix = raw.slice(0, dotIdx);
+  if (/^d-[a-zA-Z0-9]+$/.test(prefix)) {
+    return raw.slice(dotIdx + 1);
+  }
+  return raw;
+}
 
 /**
- * 三级 fallback 获取用户 email：
- * 1. kiro-cli whoami — 最可靠，直接从 Kiro 认证系统获取
- * 2. getUsageLimits API — 读取本地 SSO token + profile，调用 AWS API
- * 3. git config user.email — 最后兜底，从 git 配置获取
+ * 尝试通过 kiro-cli whoami 获取 email。失败或没配置返回空字符串。
  */
-async function getUserEmail(): Promise<string> {
-  // 方式 1: kiro-cli whoami
+function getEmailFromKiroCli(): string {
   try {
     const output = execFileSync("kiro-cli", ["whoami"], {
       timeout: 10_000, encoding: "utf-8",
@@ -123,107 +161,71 @@ async function getUserEmail(): Promise<string> {
     }
     console.log("[git-ai-kiro] kiro-cli whoami succeeded but no email found in output");
   } catch (err) {
-    console.warn(`[git-ai-kiro] kiro-cli whoami failed (not installed or error): ${err}`);
+    console.log(`[git-ai-kiro] kiro-cli whoami not available: ${err}`);
   }
-
-  // 方式 2: getUsageLimits API
-  try {
-    const email = await getEmailFromUsageLimits();
-    if (email) {
-      console.log(`[git-ai-kiro] Got email from getUsageLimits API: ${email}`);
-      return email;
-    }
-    console.log("[git-ai-kiro] getUsageLimits API succeeded but no email in response");
-  } catch (err) {
-    console.warn(`[git-ai-kiro] getUsageLimits API failed (token invalid or network error): ${err}`);
-  }
-
-  // 方式 3: git config user.email
-  try {
-    const folders = vscode.workspace.workspaceFolders;
-    const cwd = folders?.[0]?.uri.fsPath;
-    if (cwd) {
-      const email = execFileSync("git", ["config", "user.email"], {
-        cwd, timeout: 5_000, encoding: "utf-8",
-      }).trim();
-      if (email) {
-        console.log(`[git-ai-kiro] Got email from git config: ${email}`);
-        return email;
-      }
-    }
-  } catch (err) {
-    console.warn(`[git-ai-kiro] git config user.email failed: ${err}`);
-  }
-
-  console.warn("[git-ai-kiro] All 3 methods to get user email failed");
   return "";
 }
 
-async function getEmailFromUsageLimits(): Promise<string> {
-  const tokenData = readJsonFile(getSsoTokenPath());
-  if (!tokenData?.accessToken) {
-    console.log("[git-ai-kiro] No SSO access token found");
-    return "";
-  }
-
-  const profileData = readJsonFile(getProfileJsonPath());
-  if (!profileData?.arn) {
-    console.log("[git-ai-kiro] No profile ARN found");
-    return "";
-  }
-
-  const region = tokenData.region || "us-east-1";
-  const profileArn = encodeURIComponent(profileData.arn);
-  const apiPath = `/getUsageLimits?profileArn=${profileArn}&origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true`;
-
-  return new Promise((resolve) => {
-    const req = https.request({
-      hostname: `codewhisperer.${region}.amazonaws.com`,
-      path: apiPath,
-      method: "GET",
-      headers: { Authorization: `Bearer ${tokenData.accessToken}` },
-      timeout: REQUEST_TIMEOUT_MS,
-    }, (res) => {
-      let data = "";
-      res.on("data", (c) => { data += c; });
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          resolve(parsed?.userInfo?.email || "");
-        } catch {
-          resolve("");
-        }
-      });
-    });
-    req.on("error", () => resolve(""));
-    req.on("timeout", () => { req.destroy(); resolve(""); });
-    req.end();
-  });
-}
-
-// ==================== 本地文件路径 ====================
-
-function getSsoTokenPath(): string {
-  return path.join(os.homedir(), ".aws", "sso", "cache", "kiro-auth-token.json");
-}
-
-function getProfileJsonPath(): string {
-  const platform = os.platform();
-  let base: string;
-  if (platform === "darwin") {
-    base = path.join(os.homedir(), "Library", "Application Support", "Kiro");
-  } else if (platform === "win32") {
-    base = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Kiro");
-  } else {
-    base = path.join(os.homedir(), ".config", "Kiro");
-  }
-  return path.join(base, "User", "globalStorage", "kiro.kiroagent", "profile.json");
-}
-
-function readJsonFile(filePath: string): any {
+/** 向工作区的 git repo 的 .git/ai/last_upload_payload.json 追加一条 userSync 记录 */
+function writeDebugLog(payload: UserSyncPayload): void {
   try {
-    if (!fs.existsSync(filePath)) { return null; }
-    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders) return;
+    const { findGitRoot, findGitReposInDir } = require("./gitUtils");
+    const wsPath = folders[0].uri.fsPath;
+    const repos: string[] = [];
+    const gitRoot = findGitRoot(wsPath);
+    if (gitRoot) {
+      repos.push(gitRoot);
+    } else {
+      repos.push(...findGitReposInDir(wsPath));
+    }
+    for (const repoPath of repos) {
+      const aiDir = path.join(repoPath, ".git", "ai");
+      if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir, { recursive: true });
+      const logFile = path.join(aiDir, "last_upload_payload.json");
+      fs.appendFileSync(logFile, `[userSync] [${new Date().toISOString()}] ${JSON.stringify(payload)}\n`, "utf-8");
+      cleanOldLines(logFile, LOG_RETENTION_DAYS);
+    }
+  } catch { /* best effort */ }
+}
+
+/**
+ * 扫描工作区的 git repo 的 last_upload_payload.json，返回最近一次 userSync 的时间戳（ms）。
+ * 没有记录返回 null。
+ */
+function getLastUserSyncTimestamp(): number | null {
+  try {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders) return null;
+    const { findGitRoot, findGitReposInDir } = require("./gitUtils");
+    const wsPath = folders[0].uri.fsPath;
+    const repos: string[] = [];
+    const gitRoot = findGitRoot(wsPath);
+    if (gitRoot) {
+      repos.push(gitRoot);
+    } else {
+      repos.push(...findGitReposInDir(wsPath));
+    }
+
+    let latest: number | null = null;
+    for (const repoPath of repos) {
+      const logFile = path.join(repoPath, ".git", "ai", "last_upload_payload.json");
+      if (!fs.existsSync(logFile)) continue;
+      let content = "";
+      try { content = fs.readFileSync(logFile, "utf-8"); } catch { continue; }
+      // 用正则直接匹配所有 [userSync] [ISO时间戳] 片段，不依赖行边界
+      // （Windows 上可能因换行符/BOM 问题导致多条记录粘连在同一行，此写法更鲁棒）
+      const re = /\[userSync\]\s*\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\]/g;
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(content)) !== null) {
+        const t = new Date(match[1]).getTime();
+        if (!isNaN(t) && (latest === null || t > latest)) {
+          latest = t;
+        }
+      }
+    }
+    return latest;
   } catch {
     return null;
   }
@@ -277,20 +279,17 @@ function doPost(url: string, token: string, body: string): Promise<number> {
 
 // ==================== 日志清理 ====================
 
-/**
- * 清理日志文件中超过指定天数的行。
- * 行格式：[type] [ISO8601] {...}，从第二个 [...] 中提取时间戳。
- */
+/** 清理日志文件中超过指定天数的行 */
 function cleanOldLines(filePath: string, days: number): void {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n");
+    // 兼容 \r\n / \r / \n 三种换行
+    const lines = content.split(/\r\n|\r|\n/);
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const kept = lines.filter((line) => {
       if (!line.trim()) return false;
-      // 提取 [ISO8601] 时间戳
       const match = line.match(/\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\]/);
-      if (!match) return true; // 无时间戳的行保留
+      if (!match) return true;
       const ts = new Date(match[1]).getTime();
       return !isNaN(ts) && ts >= cutoff;
     });

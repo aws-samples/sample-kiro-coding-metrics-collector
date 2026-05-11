@@ -25,6 +25,7 @@ db.exec(`
     user_name TEXT,
     user_email TEXT,
     reported_at TEXT,
+    commit_msg TEXT DEFAULT '',
     human_additions INTEGER DEFAULT 0,
     ai_additions INTEGER DEFAULT 0,
     mixed_additions INTEGER DEFAULT 0,
@@ -79,6 +80,7 @@ db.exec(`
 // Schema migration: add ai_deletions/human_deletions columns to commits table
 try { db.exec("ALTER TABLE commits ADD COLUMN ai_deletions INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE commits ADD COLUMN human_deletions INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE commits ADD COLUMN commit_msg TEXT DEFAULT ''"); } catch {}
 
 /**
  * Backfill ai_ratio_history from existing commits.
@@ -167,12 +169,12 @@ function saveStats(payload) {
   const insertCommit = db.prepare(`
     INSERT INTO commits (
       repo_name, repo_remote_url, branch, commit_sha, machine_id,
-      user_name, user_email, reported_at,
+      user_name, user_email, reported_at, commit_msg,
       human_additions, ai_additions, mixed_additions,
       ai_accepted, total_ai_additions, total_ai_deletions,
       time_waiting_for_ai, git_diff_added_lines, git_diff_deleted_lines,
       ai_deletions, human_deletions
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertToolModel = db.prepare(`
@@ -188,7 +190,7 @@ function saveStats(payload) {
     const info = insertCommit.run(
       p.repo_name, p.repo_remote_url, p.branch,
       p.commit_sha, p.machine_id,
-      p.user_name, p.user_email, p.reported_at,
+      p.user_name, p.user_email, p.reported_at, p.commit_msg || "",
       cs.human_additions, cs.ai_additions, cs.mixed_additions,
       cs.ai_accepted, cs.total_ai_additions, cs.total_ai_deletions,
       cs.time_waiting_for_ai, cs.git_diff_added_lines, cs.git_diff_deleted_lines,
@@ -258,6 +260,7 @@ function getRepoStats(repoName) {
         repo_remote_url: row.repo_remote_url,
         branch: row.branch,
         commit_sha: row.commit_sha,
+        commit_msg: row.commit_msg || "",
         machine_id: row.machine_id,
         user_name: row.user_name,
         user_email: row.user_email,

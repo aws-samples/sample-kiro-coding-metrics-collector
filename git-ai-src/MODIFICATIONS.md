@@ -31,6 +31,15 @@ Kiro IDE as a bundled binary within the plugin:
 - Enhanced `git-ai diff --json` output to include `prompt_id` in hunk data,
   enabling precise AI/human deletion attribution in the post-commit hook
 
+### 4. Amend Commit Support in `post-commit` CLI
+
+- Extended `git-ai post-commit` CLI to accept an optional `--amend-from <original_sha>`
+  flag. When provided, the command emits a `CommitAmend` rewrite event instead of a
+  plain `Commit` event. This routes processing through
+  `rewrite_authorship_after_commit_amend_with_snapshot`, which correctly merges AI
+  attribution from the original commit's note with the amended diff. Previously the
+  CLI always used `Commit` events, so `git commit --amend` lost all AI attribution.
+
 ## Files Modified
 
 Key source files that were modified (non-exhaustive):

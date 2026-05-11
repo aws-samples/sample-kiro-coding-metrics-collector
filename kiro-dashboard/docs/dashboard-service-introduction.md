@@ -185,7 +185,7 @@ UserId 解析规则：
 
 ### POST /api/v1/userSync
 
-插件端定时上报用户活跃信息，同时更新 `kiro_user` 表和 `plugins` 表。
+插件端在 Kiro 调用 `GetUsageLimitsCommand` 时（每次距上次 ≥ 4 小时）触发上报，用于维护用户活跃信息，同时更新 `kiro_user` 表和 `plugins` 表。
 
 请求头：
 ```
@@ -196,22 +196,25 @@ Authorization: Bearer <token>
 请求体：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| user_name | string | 是 | 用户 email |
-| user_ip | string | 否 | 客户端公网 IP |
+| user_name | string | 条件必填 | 用户 email；当客户端网络受限、`kiro-cli whoami` 不可用时，该字段会被填为 "Unknown"，服务端将尝试用 `user_id` 向 IdC 查询真实 email 替代 |
+| user_id | string | 条件必填 | IdC 用户标识（UUID）；由插件从 Kiro 的 `q-client.log` 中解析得到。插件会自动剥离 `d-<storeId>.` 前缀，只上传裸 UUID。`user_name` 和 `user_id` 至少提供其一 |
+| user_ip | string | 否 | 客户端本机 IP |
 | hostname | string | 否 | 客户端主机名（`os.hostname()`），用于 plugins 表去重 |
 
 请求示例：
 ```json
 {
-  "user_name": "user@example.com",
-  "user_ip": "54.240.199.97",
-  "hostname": "haozhas-mac.corp.amazon.com"
+  "user_name": "Unknown",
+  "user_id": "04b8b4f8-0071-7044-fe9c-ff2bcb4fa5b3",
+  "user_ip": "10.2.0.59",
+  "hostname": "WSAMZN-QV17R8V6"
 }
 ```
 
 处理逻辑：
-1. 在 `kiro_user` 表中 upsert 用户记录：更新 `user_ip`、`updated_at`
-2. 如果 `hostname` 非空，在 `plugins` 表中 upsert 一条记录（hostname 为主键），更新 `user_name`、`ip`、`last_updated`
+1. 如果 `user_name` 为空或 `"Unknown"`，且提供了 `user_id`，服务端通过 `identitystore:ListUsers`（10 分钟缓存）查到对应的 IdC `UserName` 作为 email；查不到则保持 `"Unknown"`
+2. 在 `kiro_user` 表中 upsert 用户记录：更新 `user_ip`、`updated_at`
+3. 如果 `hostname` 非空，在 `plugins` 表中 upsert 一条记录（hostname 为主键），更新 `user_name`、`ip`、`last_updated`
 
 响应：
 ```json
@@ -219,7 +222,7 @@ Authorization: Bearer <token>
 ```
 
 错误响应：
-- 400：`{ "status": "error", "message": "Missing required field: user_name" }`
+- 400：`{ "status": "error", "message": "Missing required field: user_name or user_id" }`
 - 401：`{ "status": "error", "message": "Invalid token" }`
 - 500：`{ "status": "error", "message": "<错误信息>" }`
 

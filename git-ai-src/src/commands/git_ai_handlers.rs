@@ -1919,10 +1919,35 @@ fn resolve_head_sha(repo: &Repository) -> String {
 }
 
 fn handle_post_commit(args: &[String]) {
-    let commit_sha = match args.first() {
+    // Parse args: <commit_sha> [--amend-from <original_sha>]
+    let mut positional: Vec<String> = Vec::new();
+    let mut amend_from: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--amend-from" => {
+                if i + 1 < args.len() {
+                    amend_from = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Usage: git-ai post-commit <commit_sha> [--amend-from <original_sha>]");
+                    std::process::exit(1);
+                }
+            }
+            s if s.starts_with("--amend-from=") => {
+                amend_from = Some(s.trim_start_matches("--amend-from=").to_string());
+                i += 1;
+            }
+            other => {
+                positional.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+    let commit_sha = match positional.first() {
         Some(sha) => sha.clone(),
         None => {
-            eprintln!("Usage: git-ai post-commit <commit_sha>");
+            eprintln!("Usage: git-ai post-commit <commit_sha> [--amend-from <original_sha>]");
             std::process::exit(1);
         }
     };
@@ -1939,6 +1964,7 @@ fn handle_post_commit(args: &[String]) {
     // Skip if this commit already has an authorship note.
     // This prevents overwriting a correct note written by a git hook (e.g.,
     // when git-ai is installed as a native git hook alongside the Kiro plugin).
+    // For amend, the caller is expected to remove the stale note on commit_sha first.
     if crate::git::refs::show_authorship_note(&repo, &commit_sha).is_some() {
         crate::utils::debug_log(&format!(
             "[post-commit] Commit {} already has an authorship note, skipping",
@@ -1978,12 +2004,19 @@ fn handle_post_commit(args: &[String]) {
     // git, we do it here — the working directory content matches the committed
     // content at this point, so the timing is correct.
     //
-    // IMPORTANT: We must pass base_commit as the base_commit_override because
+    // IMPORTANT: We must pass the right base_commit as the override because
     // HEAD has already advanced to the new commit. Without the override,
     // resolve_base_commit() would return the NEW commit SHA, and the checkpoint
-    // would look in `.git/ai/working_logs/<new_commit>/` which is empty —
-    // causing it to skip with "No AI edits in pre-commit checkpoint".
-    // The AI checkpoint data lives under `.git/ai/working_logs/<parent_commit>/`.
+    // would look in `.git/ai/working_logs/<new_commit>/` which is empty.
+    //
+    // For amend: the AI checkpoints accumulated after the original commit live
+    // under `.git/ai/working_logs/<original_commit>/`, so use that as the base.
+    // For a plain commit: checkpoints live under `.git/ai/working_logs/<parent>/`.
+    let checkpoint_base = if let Some(orig) = amend_from.as_deref() {
+        Some(orig.to_string())
+    } else {
+        base_commit.clone()
+    };
     if let Err(e) = crate::commands::checkpoint::run_with_base_commit_override(
         &repo,
         &author,
@@ -1991,7 +2024,7 @@ fn handle_post_commit(args: &[String]) {
         true,  // quiet
         None,  // agent_run_result
         true,  // is_pre_commit
-        base_commit.as_deref(),
+        checkpoint_base.as_deref(),
     ) {
         // Non-fatal: log and continue so authorship note is still generated.
         crate::utils::debug_log(&format!(
@@ -2000,8 +2033,17 @@ fn handle_post_commit(args: &[String]) {
         ));
     }
 
+    // For amend, dispatch through the CommitAmend rewrite event so the proper
+    // amend-aware handler runs (it reuses the original commit's note + diff
+    // against the new parent). For plain commits, use the Commit event.
+    let event = if let Some(original_commit) = amend_from {
+        RewriteLogEvent::commit_amend(original_commit, commit_sha)
+    } else {
+        RewriteLogEvent::commit(base_commit, commit_sha)
+    };
+
     repo.handle_rewrite_log_event(
-        RewriteLogEvent::commit(base_commit, commit_sha),
+        event,
         author,
         true,
         true,
