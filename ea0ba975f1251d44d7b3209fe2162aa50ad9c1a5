@@ -4,13 +4,13 @@ kiro-pugin/package.json
   8121232c57be7f81 5
 kiro-dashboard/docs/dashboard-service-introduction.md
   8121232c57be7f81 200,208
-git-ai-src/MODIFICATIONS.md
-  8121232c57be7f81 34-42
+kiro-pugin/src/gitUtils.ts
+  8121232c57be7f81 272,274-275,281,283-285,287-288,290-291,293,297,418-432,507-511,513-544,546,550-586,590,711,715,717-718,720,722,725,728,800-810,825
+  a65b7c9dcd38d099 7,192-196,198-223,271,273,276-280,282,286,294-296,415-417,485-506,512,547-548,589,591-631,633-697,712-714,716,719,726-727,797-799,818,859-868
 git-ai-src/src/commands/git_ai_handlers.rs
   8121232c57be7f81 1922-1947,1950,1967,2007,2010-2019,2027,2036-2043,2046
-kiro-pugin/src/gitUtils.ts
-  a65b7c9dcd38d099 7,192-196,198-223,271,273,276-280,282,286,294-296,415-417,485-506,512,547-548,589,591-631,633-697,712-714,716,719,726-727,797-799,818,859-868
-  8121232c57be7f81 272,274-275,281,283-285,287-288,290-291,293,297,418-432,507-511,513-544,546,550-586,590,711,715,717-718,720,722,725,728,800-810,825
+git-ai-src/MODIFICATIONS.md
+  8121232c57be7f81 34-42
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -23,7 +23,7 @@ kiro-pugin/src/gitUtils.ts
         "id": "4d4fe5f5-50e9-456e-8d9d-9e78e6b456cd",
         "model": "kiro-ai"
       },
-      "human_author": "haozhas <haozhas@amazon.com>",
+      "human_author": "haozhas",
       "messages": [],
       "total_additions": 4705,
       "total_deletions": 1321,
