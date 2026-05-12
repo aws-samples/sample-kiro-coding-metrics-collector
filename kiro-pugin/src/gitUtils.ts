@@ -260,6 +260,9 @@ function getHookConfig(): { statsUrl: string; ignoreArgs: string } {
 
 function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: string): string {
   const { statsUrl, ignoreArgs } = getHookConfig();
+  // curl.exe 与 git-ai 在同一个 bin/ 目录下，Windows 上没有系统 curl 时使用插件自带的
+  const binDir = binaryPath.replace(/\/[^/]+$/, "");
+  const curlPath = `${binDir}/curl.exe`;
 
   return `${marker}
 # Auto-installed by git-ai-kiro plugin. Do not edit this section manually.
@@ -445,7 +448,12 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
       ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
     fi
   fi
-  curl -s -X POST "${statsUrl}" \\
+  # 优先使用系统 curl，不存在时使用插件自带的 curl.exe（Windows 兜底）
+  CURL_CMD="curl"
+  if ! command -v curl >/dev/null 2>&1; then
+    CURL_CMD="${curlPath}"
+  fi
+  "$CURL_CMD" -s -X POST "${statsUrl}" \\
     -H "Content-Type: application/json" \\
     -H "X-Idempotency-Key: $IDEM_KEY" \\
     -d "$PAYLOAD" >/dev/null 2>&1 || true
