@@ -348,7 +348,8 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
     fi
   fi
 
-  # 优先使用插件端计算的 AI 净删除行数（精确值）
+  # 优先使用插件端计算的 AI 删除行数（精确值）
+  # kiro_net_deletions 记录的是 AI 实际删除的行数（通过行级 diff 计算）
   KIRO_NET_DEL_FILE="$REPO_ROOT/.git/ai/kiro_net_deletions"
   KIRO_NET_DEL=0
   if [ -f "$KIRO_NET_DEL_FILE" ]; then
@@ -448,15 +449,18 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
       ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
     fi
   fi
-  # 优先使用系统 curl，不存在时使用插件自带的 curl.exe（Windows 兜底）
-  CURL_CMD="curl"
-  if ! command -v curl >/dev/null 2>&1; then
-    CURL_CMD="${curlPath}"
+  # Windows 上 sh 脚本强制使用插件自带的 curl.exe，避免系统 curl 不存在或版本不兼容
+  # 非 Windows 使用系统 curl
+  CURL_CMD="${curlPath}"
+  if [ ! -f "$CURL_CMD" ]; then
+    CURL_CMD="curl"
   fi
   "$CURL_CMD" -s -X POST "${statsUrl}" \\
     -H "Content-Type: application/json" \\
     -H "X-Idempotency-Key: $IDEM_KEY" \\
     -d "$PAYLOAD" >/dev/null 2>&1 || true
+  # 清理残留的 git-ai 进程（Windows 上进程可能不断累积）
+  taskkill //F //IM git-ai.exe 2>/dev/null || pkill -x git-ai 2>/dev/null || true
 ) &
 ${endMarker}`;
 }

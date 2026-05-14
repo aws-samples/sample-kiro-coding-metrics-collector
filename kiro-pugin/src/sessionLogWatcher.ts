@@ -534,24 +534,61 @@ export class SessionLogWatcher implements vscode.Disposable {
           for (const [fp, latest] of allLatest) {
             if (ignPats.length > 0 && matchesIgnorePatternSafe(fp, ignPats)) continue;
             const earliest = allEarliest.get(fp);
-            const orig = earliest?.originalContent;
+            let orig = earliest?.originalContent;
             const mod = latest.modifiedContent;
-            if (orig !== undefined && mod !== undefined) {
-              let ol = orig.replace(/\r\n/g, "\n").split("\n").length;
-              let ml = mod === "" ? 0 : mod.replace(/\r\n/g, "\n").split("\n").length;
-              // Windows: originalContent === modifiedContent 时，从磁盘读取实际文件行数作为 modifiedContent
-              if (orig === mod && fp) {
-                try {
-                  const absPath = path.resolve(group.repoPath, fp);
-                  const diskContent = fs.readFileSync(absPath, "utf-8");
-                  ml = diskContent.replace(/\r\n/g, "\n").split("\n").length;
-                } catch {
-                  // 文件可能已删除，ml 保持为 0
-                  ml = 0;
+            const isDeleteAction = latest.actionType === "delete";
+
+            // 删除文件场景：originalContent 可能缺失，从 git HEAD 读取原始内容
+            if (isDeleteAction && (orig === undefined || orig === "")) {
+              try {
+                const { execFileSync } = require("node:child_process");
+                const gitOutput = execFileSync("git", ["show", `HEAD:${fp}`], {
+                  cwd: group.repoPath,
+                  encoding: "utf-8",
+                  timeout: 5000,
+                  stdio: ["ignore", "pipe", "pipe"],
+                });
+                orig = gitOutput;
+              } catch {
+                // 文件不在 git 中（新建后又删除），跳过
+                continue;
+              }
+            }
+
+            // 需要 originalContent 才能计算删除行数
+            if (orig === undefined) continue;
+
+            // modifiedContent 为 undefined 或 delete 操作时，视为空文件
+            const effectiveMod = isDeleteAction ? "" : (mod ?? "");
+            const origLines = orig.replace(/\r\n/g, "\n").split("\n");
+            let modLines: string[];
+            // Windows: originalContent === modifiedContent 时，从磁盘读取实际文件内容
+            if (!isDeleteAction && orig === effectiveMod && effectiveMod !== "" && fp) {
+              try {
+                const absPath = path.resolve(group.repoPath, fp);
+                const diskContent = fs.readFileSync(absPath, "utf-8");
+                modLines = diskContent.replace(/\r\n/g, "\n").split("\n");
+              } catch {
+                modLines = [];
+              }
+            } else {
+              modLines = effectiveMod === "" ? [] : effectiveMod.replace(/\r\n/g, "\n").split("\n");
+            }
+            // 计算实际删除行数：使用简单的贪心顺序匹配（近似 LCS）
+            // deletions = origLines.length - matched
+            let matched = 0;
+            let oi = 0;
+            for (let mi = 0; mi < modLines.length && oi < origLines.length; mi++) {
+              for (let k = oi; k < origLines.length; k++) {
+                if (origLines[k] === modLines[mi]) {
+                  matched++;
+                  oi = k + 1;
+                  break;
                 }
               }
-              if (ol > ml) aiNetDel += ol - ml;
             }
+            const deletions = origLines.length - matched;
+            if (deletions > 0) aiNetDel += deletions;
           }
           if (aiNetDel > 0) {
             try {
@@ -635,8 +672,33 @@ export class SessionLogWatcher implements vscode.Disposable {
       }).filter((action) => {
         const absPath = normalizePath(path.resolve(this.workspacePath, action.filePath)).toLowerCase();
         if (!absPath.startsWith(workspacePrefix)) {
-          console.log(`[git-ai-kiro] Skipping file outside workspace: ${action.filePath} (abs: ${absPath}, ws: ${workspacePrefix})`);
-          return false;
+          // 多根 workspace 兼容：文件可能在其他 workspace folder 或已发现的 repo 中
+          // 检查是否在任何已发现的 repo 下
+          const inRepo = this.repos.some((repo) => {
+            const repoPrefix = normalizePath(repo.rootPath).toLowerCase();
+            return absPath.startsWith(repoPrefix + "/") || absPath.startsWith(repoPrefix + "\\") || absPath === repoPrefix;
+          });
+          if (!inRepo) {
+            // 再检查是否在其他 workspace folders 下
+            let inOtherFolder = false;
+            try {
+              const vsc = require("vscode");
+              const folders = vsc.workspace?.workspaceFolders;
+              if (folders) {
+                for (const f of folders) {
+                  const folderPrefix = normalizePath(f.uri.fsPath).toLowerCase();
+                  if (absPath.startsWith(folderPrefix + "/") || absPath.startsWith(folderPrefix + "\\")) {
+                    inOtherFolder = true;
+                    break;
+                  }
+                }
+              }
+            } catch { /* vscode not available */ }
+            if (!inOtherFolder) {
+              console.log(`[git-ai-kiro] Skipping file outside workspace: ${action.filePath} (abs: ${absPath}, ws: ${workspacePrefix})`);
+              return false;
+            }
+          }
         }
         return true;
       });
@@ -653,10 +715,35 @@ export class SessionLogWatcher implements vscode.Disposable {
       );
 
       // Log orphan files (actions that don't match any discovered repo)
-      for (const orphan of orphans) {
-        console.warn(
-          `[git-ai-kiro] Orphan file (no matching repo): ${orphan.filePath}`
-        );
+      // 对于 orphan 文件，尝试动态发现其所属的 git repo 并重新路由
+      if (orphans.length > 0) {
+        const newReposDiscovered: RepoInfo[] = [];
+        for (const orphan of orphans) {
+          const absPath = normalizePath(path.resolve(this.workspacePath, orphan.filePath));
+          const dirPath = path.dirname(absPath);
+          const gitRoot = findGitRoot(dirPath);
+          if (gitRoot) {
+            const normalizedRoot = normalizePath(gitRoot);
+            // 避免重复添加
+            if (!this.repos.some((r) => normalizePath(r.rootPath).toLowerCase() === normalizedRoot.toLowerCase())) {
+              this.repos.push({ rootPath: normalizedRoot });
+              newReposDiscovered.push({ rootPath: normalizedRoot });
+              console.log(`[git-ai-kiro] Dynamically discovered repo for orphan file: ${normalizedRoot}`);
+            }
+          } else {
+            console.warn(`[git-ai-kiro] Orphan file (no matching repo): ${orphan.filePath}`);
+          }
+        }
+        // 如果发现了新 repo，重新分组
+        if (newReposDiscovered.length > 0) {
+          const reGrouped = groupActionsByRepo(orphans, this.repos, this.workspacePath);
+          for (const g of reGrouped.groups) {
+            groups.push(g);
+          }
+          for (const o of reGrouped.orphans) {
+            console.warn(`[git-ai-kiro] Orphan file (no matching repo after re-discovery): ${o.filePath}`);
+          }
+        }
       }
 
       // Filter out actions whose files don't actually exist on disk.
@@ -675,6 +762,38 @@ export class SessionLogWatcher implements vscode.Disposable {
           try {
             fs.accessSync(absPath);
           } catch {
+            // 文件在当前 repo 下不存在。可能是多根 workspace 中，filePath 的第一段
+            // 实际上是同级 workspace folder 的名称（如 "test/Main33.java" 中 "test" 是同级目录）。
+            // 尝试在其他 workspace folders 和已知 repos 中查找。
+            const segments = action.filePath.replace(/\\/g, "/").split("/");
+            if (segments.length >= 2) {
+              const firstSeg = segments[0];
+              // 检查是否有同级目录匹配第一段
+              const parentDir = path.dirname(group.repoPath);
+              const candidatePath = path.join(parentDir, action.filePath);
+              try {
+                fs.accessSync(candidatePath);
+                // 文件存在于同级目录！找到其 git repo 并重新路由
+                const candidateGitRoot = findGitRoot(path.dirname(candidatePath));
+                if (candidateGitRoot) {
+                  const normalizedRoot = normalizePath(candidateGitRoot);
+                  if (!this.repos.some((r) => normalizePath(r.rootPath).toLowerCase() === normalizedRoot.toLowerCase())) {
+                    this.repos.push({ rootPath: normalizedRoot });
+                    console.log(`[git-ai-kiro] Dynamically discovered sibling repo: ${normalizedRoot}`);
+                  }
+                  // 将此 action 移到正确的 group
+                  const repoRelPath = normalizePath(candidatePath).slice(normalizePath(candidateGitRoot).length + 1);
+                  let targetGroup = groups.find((g) => normalizePath(g.repoPath).toLowerCase() === normalizedRoot.toLowerCase());
+                  if (!targetGroup) {
+                    targetGroup = { repoPath: normalizedRoot, actions: [] };
+                    groups.push(targetGroup);
+                  }
+                  targetGroup.actions.push({ ...action, filePath: repoRelPath });
+                  console.log(`[git-ai-kiro] Re-routed file to sibling repo: ${action.filePath} → ${normalizedRoot}/${repoRelPath}`);
+                }
+                return false; // 从当前 group 中移除（已移到正确的 group）
+              } catch { /* 同级目录也不存在 */ }
+            }
             console.log(`[git-ai-kiro] Skipping non-existent file: ${action.filePath} (resolved: ${absPath})`);
             return false;
           }

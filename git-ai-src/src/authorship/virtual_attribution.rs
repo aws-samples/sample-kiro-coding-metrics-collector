@@ -1467,6 +1467,47 @@ impl VirtualAttributions {
                         continue;
                     }
 
+                    // Fill gaps of blank/whitespace-only lines between AI-attributed lines.
+                    // When AI generates code with blank separator lines, those lines may not
+                    // have character-level attributions and end up missing from committed_lines.
+                    // We fill gaps of ≤ 3 blank lines to keep the AI range continuous.
+                    if let Some(ref committed_hunks_for_file) = file_committed_hunks {
+                        let file_content_for_gap = self.file_contents.get(file_path)
+                            .or_else(|| self.file_contents.get(&effective_commit_path))
+                            .cloned()
+                            .unwrap_or_default();
+                        if !file_content_for_gap.is_empty() && lines.len() >= 2 {
+                            let gap_boundaries = crate::authorship::attribution_tracker::LineBoundaries::new(&file_content_for_gap);
+                            let mut filled_lines = lines.clone();
+                            let mut gap_idx = 0;
+                            while gap_idx + 1 < lines.len() {
+                                let gap_start = lines[gap_idx] + 1;
+                                let gap_end = lines[gap_idx + 1] - 1;
+                                if gap_start <= gap_end && (gap_end - gap_start + 1) <= 3 {
+                                    let all_blank_and_committed = (gap_start..=gap_end).all(|ln| {
+                                        let is_blank = if let Some((s, e)) = gap_boundaries.get_line_range(ln) {
+                                            let lc = &file_content_for_gap[s..e];
+                                            lc.is_empty() || lc.chars().all(|c: char| c.is_whitespace())
+                                        } else {
+                                            true
+                                        };
+                                        let is_in_committed = committed_hunks_for_file.iter().any(|h| h.contains(ln));
+                                        is_blank && is_in_committed
+                                    });
+                                    if all_blank_and_committed {
+                                        for ln in gap_start..=gap_end {
+                                            filled_lines.push(ln);
+                                        }
+                                    }
+                                }
+                                gap_idx += 1;
+                            }
+                            filled_lines.sort();
+                            filled_lines.dedup();
+                            lines = filled_lines;
+                        }
+                    }
+
                     // Create line ranges
                     let mut ranges = Vec::new();
                     let mut range_start = lines[0];

@@ -65,71 +65,72 @@
 | 24 | AI 删除整个文件 | 已有文件 5 行 → 让 AI 删除该文件 → commit | ai_deletions=5, human_deletions=0 |
 | 25 | 人工删除整个文件 | 已有文件 5 行 → 手动 `git rm` 该文件 → commit | ai_deletions=0, human_deletions=5 |
 | 26 | 混合删除+新增 | AI 新增 3 行 + 删除 2 行，人工新增 1 行 + 删除 1 行 → commit | ai_deletions=2, human_deletions=1 |
-| 27 | 删除行数守恒 | 任意删除操作后 commit | ai_deletions + human_deletions = git_diff_deleted_lines |
-| 28 | 大文件混合删除精确性 | AI 在大文件中删除 10 行后人工删除 4 行 → commit | ai_deletions=10, human_deletions=4 |
+| 27 | AI删除+新增 | AI 删除 3 行 + 新增 2 行 → commit | ai_deletions=3, ai_additions=2 |
+| 28 | 删除行数守恒 | 任意删除操作后 commit | ai_deletions + human_deletions = git_diff_deleted_lines |
+| 29 | 大文件混合删除精确性 | AI 在大文件中删除 10 行后人工删除 4 行 → commit | ai_deletions=10, human_deletions=4 |
 
 ### 六、Git 操作过滤场景
 
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 29 | git pull 不上报 | 在另一台机器 push 代码，本地 git pull | 不上报 |
-| 30 | git merge 不上报 | 创建分支 B，在 B 上 commit，切回 main，git merge B | 不上报 |
-| 31 | 解冲突后 commit 上报 | merge 产生冲突 → 手动解决 → git commit | 上报，冲突解决的行计入 human_additions |
-| 32 |  commit amend 上报 | 在分支上 commit amend | 上报，与正常commit结果一致 |
+| 30 | git pull 不上报 | 在另一台机器 push 代码，本地 git pull | 不上报 |
+| 31 | git merge 不上报 | 创建分支 B，在 B 上 commit，切回 main，git merge B | 不上报 |
+| 32 | 解冲突后 commit 上报 | merge 产生冲突 → 手动解决 → git commit | 上报，冲突解决的行计入 human_additions |
+| 33 |  commit amend 上报 | 在分支上 commit amend | 上报，与正常commit结果一致 |
 
 ### 七、工程化目录过滤场景
 
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 33 | node_modules/out/dist 不统计 | commit 包含 node_modules/、out/ 或 dist/ 下文件的变更 | 该文件的行数不计入任何指标 |
-| 34 | lock 文件不统计 | commit 包含 package-lock.json 的变更 | 该文件的行数不计入 |
-| 35 | 二进制文件不统计 | commit 包含 *.class、*.jar、*.exe 等文件 | 不计入 |
+| 34 | node_modules/out/dist 不统计 | commit 包含 node_modules/、out/ 或 dist/ 下文件的变更 | 该文件的行数不计入任何指标 |
+| 35 | lock 文件不统计 | commit 包含 package-lock.json 的变更 | 该文件的行数不计入 |
+| 36 | 二进制文件不统计 | commit 包含 *.class、*.jar、*.exe 等文件 | 不计入 |
 
 ### 八、父、子目录打开场景
 
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 36 | 子目录打开 AI 编辑 | 用 Kiro 打开 `repo/sub1/`，AI 编辑 `sub1/Foo.java` | checkpoint 正确写入 git root 的 working_logs，路径为 `sub1/Foo.java` |
-| 37 | 子目录打开 AI 删除文件 | 用 Kiro 打开 `repo/sub1/`，AI 删除 `sub1/Foo.java` | ai_deletions=对应行数 |
-| 38 | 子目录打开 commit | 在 git root 目录执行 `git commit` | post-commit hook 正确触发，stats 上报正确 |
-| 39 | 子目录打开无跨污染 | 只编辑 `sub1/` 下的文件 | working_logs 中不出现其他目录的文件 |
-| 40 | 父目录 workspace AI 编辑 | 用 Kiro 打开 git 项目的父目录，AI 编辑子 repo 中的文件 | checkpoint 正确写入子 repo 的 `.git/ai/working_logs/` |
-| 41 | 父目录 workspace AI 删除 | 用 Kiro 打开父目录，AI 删除子 repo 中的文件 | ai_deletions=对应行数 |
-| 42 | 父目录 workspace commit | 用 Kiro 打开父目录，在子 repo 内 commit | post-commit hook 正确触发，stats 上报正确 |
-| 43 | 父目录 workspace AI 修改 | 用 Kiro 打开父目录，AI 修改子 repo 中的已有文件 | checkpoint 路由到正确 git repo，ai_additions 正确 |
+| 37 | 子目录打开 AI 编辑 | 用 Kiro 打开 `repo/sub1/`，AI 编辑 `sub1/Foo.java` | checkpoint 正确写入 git root 的 working_logs，路径为 `sub1/Foo.java` |
+| 38 | 子目录打开 AI 删除文件 | 用 Kiro 打开 `repo/sub1/`，AI 删除 `sub1/Foo.java` | ai_deletions=对应行数 |
+| 39 | 子目录打开 commit | 在 git root 目录执行 `git commit` | post-commit hook 正确触发，stats 上报正确 |
+| 40 | 子目录打开无跨污染 | 只编辑 `sub1/` 下的文件 | working_logs 中不出现其他目录的文件 |
+| 41 | 父目录 workspace AI 编辑 | 用 Kiro 打开 git 项目的父目录，AI 编辑子 repo 中的文件 | checkpoint 正确写入子 repo 的 `.git/ai/working_logs/` |
+| 42 | 父目录 workspace AI 删除 | 用 Kiro 打开父目录，AI 删除子 repo 中的文件 | ai_deletions=对应行数 |
+| 43 | 父目录 workspace commit | 用 Kiro 打开父目录，在子 repo 内 commit | post-commit hook 正确触发，stats 上报正确 |
+| 44 | 父目录 workspace AI 修改 | 用 Kiro 打开父目录，AI 修改子 repo 中的已有文件 | checkpoint 路由到正确 git repo，ai_additions 正确 |
 
 ### 九、post-commit hook 场景
 
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 44 | hook 自动安装 | 安装插件后打开 git 仓库 | `.git/hooks/post-commit` 自动创建，包含 `git-ai-kiro` marker |
-| 45 | hook 更新 | 重启插件 | hook 内容自动更新（旧 section 被替换） |
-| 46 | 命令行 commit 上报 | 在终端执行 `git commit`（不在 Kiro IDE 内） | post-commit hook 触发，stats 上报到 dashboard |
-| 47 | hook payload 调试 | commit 后查看 `.git/ai/last_upload_payload.json` | 文件存在且包含 `[stats]` 和 `[userSync]` 记录 |
-| 48 | hook 上报含删除字段 | commit 后检查上报数据 | payload 中包含 ai_deletions 和 human_deletions 字段 |
+| 45 | hook 自动安装 | 安装插件后打开 git 仓库 | `.git/hooks/post-commit` 自动创建，包含 `git-ai-kiro` marker |
+| 46 | hook 更新 | 重启插件 | hook 内容自动更新（旧 section 被替换） |
+| 47 | 命令行 commit 上报 | 在终端执行 `git commit`（不在 Kiro IDE 内） | post-commit hook 触发，stats 上报到 dashboard |
+| 48 | hook payload 调试 | commit 后查看 `.git/ai/last_upload_payload.json` | 文件存在且包含 `[stats]` 和 `[userSync]` 记录 |
+| 49 | hook 上报含删除字段 | commit 后检查上报数据 | payload 中包含 ai_deletions 和 human_deletions 字段 |
 
 ### 十、上报服务场景
 
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 49 | 用户 email 获取 | 安装插件后查看日志 | 日志显示通过 kiro-cli / getUsageLimits API / git config 之一获取到 email |
-| 50 | userSync 启动上报 | 插件启动 | Kiro Logs 中显示 `userSync payload: {user_name, user_ip, hostname}` |
-| 51 | userSync 定时上报 | 插件运行 4 小时后 | 自动再次上报 userSync（每 4 小时定时） |
-| 52 | userSync hostname 去重 | 查看 dashboard plugins 表 | 按 hostname 去重，同一主机只有一条记录 |
-| 53 | Dashboard 用户 API | GET /api/users | 返回 activeSessions、activePlugins、pluginCoverage、totalPluginRate |
-| 54 | S3 credit 同步 | 等待同步周期 | /api/users 中 totalCredits 显示从 S3 CSV 同步的数据 |
-| 55 | CloudTrail session 同步 | dashboard 启动后 | sessions 表有数据，/api/users 中 activeSessions > 0 |
-| 56 | 编码指标展示 | commit 后查看 Dashboard 服务数据 | AI 新增行、人工新增行、AI 删除行、人工删除行等指标显示正确 |
+| 50 | 用户 email 获取 | 安装插件后查看日志 | 日志显示通过 kiro-cli / getUsageLimits API / git config 之一获取到 email |
+| 51 | userSync 启动上报 | 插件启动 | Kiro Logs 中显示 `userSync payload: {user_name, user_ip, hostname}` |
+| 52 | userSync 定时上报 | 插件运行 4 小时后 | 自动再次上报 userSync（每 4 小时定时） |
+| 53 | userSync hostname 去重 | 查看 dashboard plugins 表 | 按 hostname 去重，同一主机只有一条记录 |
+| 54 | Dashboard 用户 API | GET /api/users | 返回 activeSessions、activePlugins、pluginCoverage、totalPluginRate |
+| 55 | S3 credit 同步 | 等待同步周期 | /api/users 中 totalCredits 显示从 S3 CSV 同步的数据 |
+| 56 | CloudTrail session 同步 | dashboard 启动后 | sessions 表有数据，/api/users 中 activeSessions > 0 |
+| 57 | 编码指标展示 | commit 后查看 Dashboard 服务数据 | AI 新增行、人工新增行、AI 删除行、人工删除行等指标显示正确 |
 
 ### 十一、边界场景
 7
 | # | 用例 | 操作步骤 | 预期结果 |
 |---|------|---------|---------|
-| 57 | 空 commit | `git commit --allow-empty -m "empty"` | 不上报或上报全 0 |
-| 58 | 大文件编辑 | AI 在 200+ 行的文件中修改 10 行，commit | 只有修改的 10 行计入 |
-| 59 | 插件重启后 | 重启 Kiro → AI 编辑 → commit | 正常工作（SessionLogWatcher 重新发现日志目录） |
-| 60 | Windows hook TLS | Windows 上 commit 触发 hook 上报 | PowerShell 脚本强制 TLS 1.2，不报 SSL 错误 |
-| 61 | 调试日志自动清理 | 持续使用 15 天以上 | `.git/ai/last_upload_payload.json` 中超过 15 天的记录自动清理 |
+| 58 | 空 commit | `git commit --allow-empty -m "empty"` | 不上报或上报全 0 |
+| 59 | 大文件编辑 | AI 在 200+ 行的文件中修改 10 行，commit | 只有修改的 10 行计入 |
+| 60 | 插件重启后 | 重启 Kiro → AI 编辑 → commit | 正常工作（SessionLogWatcher 重新发现日志目录） |
+| 61 | Windows hook TLS | Windows 上 commit 触发 hook 上报 | PowerShell 脚本强制 TLS 1.2，不报 SSL 错误 |
+| 62 | 调试日志自动清理 | 持续使用 15 天以上 | `.git/ai/last_upload_payload.json` 中超过 15 天的记录自动清理 |
 
 ## 验证方法
 
@@ -145,7 +146,7 @@
 
 ## 通过标准
 
-- 所有 61 个用例的实际结果与预期结果一致
+- 所有 62 个用例的实际结果与预期结果一致
 - 无控制台错误（ERR 级别）
 - 上报的 ai_additions 已去除 mixed_additions（ai_additions = ai_accepted）
 - ai_additions、ai_accepted、human_additions 均不超过 git_diff_added_lines

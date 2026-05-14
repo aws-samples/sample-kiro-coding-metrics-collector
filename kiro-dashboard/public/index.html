@@ -149,6 +149,12 @@
       const app = document.getElementById("app");
       if (repos.length === 0) { app.textContent = ''; const el = document.createElement('div'); el.className = 'empty'; el.textContent = '无匹配仓库'; app.appendChild(el); return; }
       safeSetHtml(app, repos.map(renderCard).join(""));
+      // DOMPurify 会移除内联 onclick 属性，需要在 sanitize 后用 addEventListener 重新绑定
+      app.querySelectorAll('.card[data-repo-name]').forEach(card => {
+        card.addEventListener('click', () => {
+          showDetail(card.getAttribute('data-repo-name'));
+        });
+      });
     }
 
     function handleSearch() {
@@ -164,7 +170,7 @@
       const humanPct = total > 0 ? ((total - aiContrib) / total * 100).toFixed(1) : "0.0";
       const safeRepoName = escapeHtml(repo.repo_name);
       return `
-        <div class="card" onclick="showDetail('${safeRepoName}')">
+        <div class="card" data-repo-name="${safeRepoName}">
           <div class="card-header">
             <span class="repo-name">${safeRepoName}</span>
             <span class="badge">AI ${escapeHtml(aiPct)}%</span>

@@ -100,10 +100,43 @@ The service automatically syncs users from IAM Identity Center, sessions from Cl
 
 1. Open Kiro IDE
 2. Extensions → `...` → Install from VSIX
-3. Select `kiro-pugin/git-ai-kiro-0.1.3.vsix`
+3. Select `kiro-pugin/git-ai-kiro-x.y.z.vsix`
 4. Restart IDE
 
 The plugin auto-discovers git repos in the workspace, installs post-commit hooks, and begins monitoring AI edits.
+
+### Plugin Build & Package
+
+Prerequisites: Node.js >= 20, Rust toolchain (for git-ai binary compilation).
+
+```bash
+cd kiro-pugin
+npm install
+
+# 1. Compile TypeScript
+npx tsc
+
+# 2. (Optional) Rebuild git-ai binaries from source
+cd ../git-ai-src
+cargo build --release --bin git-ai                              # macOS (native)
+cargo zigbuild --release --target x86_64-pc-windows-gnu --bin git-ai   # Windows x64
+cargo zigbuild --release --target x86_64-unknown-linux-gnu --bin git-ai # Linux x64
+
+# Copy binaries to plugin bin/
+cp target/release/git-ai ../kiro-pugin/bin/git-ai
+cp target/x86_64-pc-windows-gnu/release/git-ai.exe ../kiro-pugin/bin/git-ai.exe
+cp target/x86_64-unknown-linux-gnu/release/git-ai ../kiro-pugin/bin/git-ai-linux
+cd ../kiro-pugin
+
+# 3. Package VSIX (update version in package.json first)
+npx vsce package --allow-missing-repository --out git-ai-kiro-0.1.9.vsix
+```
+
+The `bin/` directory should contain:
+- `git-ai` — macOS arm64 binary
+- `git-ai.exe` — Windows x64 binary
+- `git-ai-linux` — Linux x64 binary (optional, for Linux dashboard server)
+- `curl.exe` — Bundled curl for Windows (fallback when system curl is unavailable)
 
 ## Key Metrics
 

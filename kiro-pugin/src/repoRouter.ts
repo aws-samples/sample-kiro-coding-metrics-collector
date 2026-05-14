@@ -6,6 +6,7 @@
  */
 
 import type { WriteAction } from "./workspacePathEncoder.js";
+import * as path from "node:path";
 
 // ── Interfaces ───────────────────────────────────────────────────────
 
@@ -55,14 +56,19 @@ export function findRepoForFile(
   absoluteFilePath: string,
   repos: RepoInfo[]
 ): RepoInfo | null {
+  // Windows 上文件系统是大小写不敏感的。归一化路径后统一小写做前缀比较，
+  // 避免盘符大小写差异（D: vs d:）导致匹配失败。
+  const isWindows = process.platform === "win32";
   const normalizedFile = normalizePath(absoluteFilePath);
+  const fileForCompare = isWindows ? normalizedFile.toLowerCase() : normalizedFile;
   let bestMatch: RepoInfo | null = null;
   let bestLength = 0;
 
   for (const repo of repos) {
     const normalizedRoot = ensureTrailingSlash(normalizePath(repo.rootPath));
+    const rootForCompare = isWindows ? normalizedRoot.toLowerCase() : normalizedRoot;
     if (
-      normalizedFile.startsWith(normalizedRoot) &&
+      fileForCompare.startsWith(rootForCompare) &&
       normalizedRoot.length > bestLength
     ) {
       bestMatch = repo;
@@ -88,12 +94,18 @@ export function toRepoRelativePath(
   workspacePath: string,
   repoPath: string
 ): string {
-  // Resolve workspace-relative path to absolute by joining workspacePath + workspaceRelativePath
-  const absolutePath = ensureTrailingSlash(normalizePath(workspacePath)) + normalizePath(workspaceRelativePath);
+  // Resolve workspace-relative path to absolute (handles ../ correctly)
+  const absolutePath = normalizePath(
+    path.resolve(workspacePath, workspaceRelativePath)
+  );
 
-  // Strip the repo root prefix (with trailing slash) from the absolute path
+  // Strip the repo root prefix (with trailing slash) from the absolute path.
+  // Windows 上做大小写不敏感的前缀匹配（盘符大小写可能不一致）。
+  const isWindows = process.platform === "win32";
   const normalizedRepoRoot = ensureTrailingSlash(normalizePath(repoPath));
-  const repoRelative = absolutePath.startsWith(normalizedRepoRoot)
+  const absForCompare = isWindows ? absolutePath.toLowerCase() : absolutePath;
+  const rootForCompare = isWindows ? normalizedRepoRoot.toLowerCase() : normalizedRepoRoot;
+  const repoRelative = absForCompare.startsWith(rootForCompare)
     ? absolutePath.slice(normalizedRepoRoot.length)
     : absolutePath;
 
@@ -128,10 +140,10 @@ export function groupActionsByRepo(
   const orphans: WriteAction[] = [];
 
   for (const action of actions) {
-    // 1. Resolve workspace-relative filePath to absolute
-    const absolutePath =
-      ensureTrailingSlash(normalizePath(workspacePath)) +
-      normalizePath(action.filePath);
+    // 1. Resolve workspace-relative filePath to absolute (handles ../ paths correctly)
+    const absolutePath = normalizePath(
+      path.resolve(workspacePath, action.filePath)
+    );
 
     // 2. Find the repo with the longest matching prefix
     const repo = findRepoForFile(absolutePath, repos);

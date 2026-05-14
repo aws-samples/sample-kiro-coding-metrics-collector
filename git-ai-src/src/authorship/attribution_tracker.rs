@@ -1895,13 +1895,13 @@ impl Default for AttributionTracker {
 }
 
 /// Helper struct to track line boundaries in content
-struct LineBoundaries {
+pub struct LineBoundaries {
     /// Maps line number (1-indexed) to (start_byte, end_byte) exclusive end
     line_ranges: Vec<(usize, usize)>,
 }
 
 impl LineBoundaries {
-    fn new(content: &str) -> Self {
+    pub fn new(content: &str) -> Self {
         let mut line_ranges = Vec::new();
         let mut start = 0;
 
@@ -1923,11 +1923,11 @@ impl LineBoundaries {
         LineBoundaries { line_ranges }
     }
 
-    fn line_count(&self) -> u32 {
+    pub fn line_count(&self) -> u32 {
         self.line_ranges.len() as u32
     }
 
-    fn get_line_range(&self, line_num: u32) -> Option<(usize, usize)> {
+    pub fn get_line_range(&self, line_num: u32) -> Option<(usize, usize)> {
         if line_num < 1 || line_num as usize > self.line_ranges.len() {
             None
         } else {
@@ -2070,11 +2070,82 @@ pub fn attributions_to_line_attributions_for_checkpoint(
     // Merge consecutive lines with the same author
     let mut merged_line_authors = merge_consecutive_line_attributions(line_authors);
 
+    // Fill small gaps (blank/whitespace-only lines) between adjacent AI ranges of the same author.
+    // This handles the case where AI generates a code block with blank separator lines between
+    // methods/classes — those blank lines should be attributed to the same AI prompt.
+    fill_blank_line_gaps_between_ai_ranges(&mut merged_line_authors, content);
+
     // Strip away all human lines (only AI lines need to be retained)
     merged_line_authors.retain(|line_attr| {
         line_attr.author_id != CheckpointKind::Human.to_str() || line_attr.overrode.is_some()
     });
     merged_line_authors
+}
+
+/// Fill small gaps of blank/whitespace-only lines between adjacent AI ranges of the same author.
+///
+/// When AI generates code with blank separator lines between methods/classes, those blank lines
+/// may not have character-level attributions and end up as "human" ranges. This function merges
+/// them into the surrounding AI range if:
+/// 1. The gap is between two AI ranges of the same author_id
+/// 2. All lines in the gap are blank or whitespace-only
+/// 3. The gap is at most 3 lines (typical method separators)
+fn fill_blank_line_gaps_between_ai_ranges(
+    line_attrs: &mut Vec<LineAttribution>,
+    content: &str,
+) {
+    if line_attrs.len() < 2 {
+        return;
+    }
+
+    let boundaries = LineBoundaries::new(content);
+    let human_id = CheckpointKind::Human.to_str();
+
+    // Iterate through pairs of adjacent ranges and find gaps to fill
+    let mut i = 0;
+    while i + 1 < line_attrs.len() {
+        let curr = &line_attrs[i];
+        let next = &line_attrs[i + 1];
+
+        // Only fill gaps between two AI ranges of the same author
+        if curr.author_id == human_id || next.author_id == human_id {
+            i += 1;
+            continue;
+        }
+        if curr.author_id != next.author_id {
+            i += 1;
+            continue;
+        }
+
+        let gap_start = curr.end_line + 1;
+        let gap_end = next.start_line - 1;
+
+        // No gap or gap too large (> 3 lines)
+        if gap_start > gap_end || (gap_end - gap_start + 1) > 3 {
+            i += 1;
+            continue;
+        }
+
+        // Check if all lines in the gap are blank/whitespace-only
+        let all_blank = (gap_start..=gap_end).all(|line_num| {
+            if let Some((start, end)) = boundaries.get_line_range(line_num) {
+                let line_content = &content[start..end];
+                line_content.is_empty() || line_content.chars().all(|c| c.is_whitespace())
+            } else {
+                true // line doesn't exist, treat as blank
+            }
+        });
+
+        if all_blank {
+            // Merge: extend current range to cover gap + next range
+            line_attrs[i].end_line = next.end_line;
+            line_attrs.remove(i + 1);
+            // Also remove any human range in between (if the merged list had one)
+            // Don't increment i — check if the newly merged range can merge with the next one too
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// Find the dominant author for a specific line from overlapping attribution candidates.
