@@ -1,17 +1,17 @@
-git-ai-src/src/authorship/attribution_tracker.rs
-  8121232c57be7f81 1898,1904,1926,1930,2073-2077,2085-2148
-kiro-dashboard/public/index.html
-  8121232c57be7f81 152-157,173
-kiro-pugin/src/sessionLogWatcher.ts
-  8121232c57be7f81 537,539-572,574-586,590-591,675-701,718-746,765-796
-README.md
-  8121232c57be7f81 103,108-139
 kiro-pugin/src/repoRouter.ts
-  8121232c57be7f81 9,59-61,63,69,71,97-100,102-104,106-108,143-146
-kiro-pugin/src/gitUtils.ts
-  8121232c57be7f81 351-352,452-456,462-463
+  8121232c57be7f81 9,59-61,63,69,71,97-104,106-108,143-146
 git-ai-src/src/authorship/virtual_attribution.rs
   8121232c57be7f81 1470-1510
+git-ai-src/src/authorship/attribution_tracker.rs
+  8121232c57be7f81 1898,1904,1926,1930,2073-2077,2085-2148
+kiro-pugin/src/sessionLogWatcher.ts
+  8121232c57be7f81 537,539-572,574-586,590-591,675-701,718-746,765-796
+kiro-dashboard/public/index.html
+  8121232c57be7f81 152-157,173
+kiro-pugin/src/gitUtils.ts
+  8121232c57be7f81 351-352,452-456,462-463
+README.md
+  8121232c57be7f81 103,108-139
 kiro-pugin/package.json
   8121232c57be7f81 5
 ---
@@ -26,7 +26,7 @@ kiro-pugin/package.json
         "id": "4d4fe5f5-50e9-456e-8d9d-9e78e6b456cd",
         "model": "kiro-ai"
       },
-      "human_author": "haozhas",
+      "human_author": "haozhas <haozhas@amazon.com>",
       "messages": [],
       "total_additions": 8152,
       "total_deletions": 1424,
