@@ -1,0 +1,25 @@
+kiro-pugin/src/gitUtils.ts
+  8121232c57be7f81 46,48-55,58-63,65-73,75-79,84,86,89,91,94-95,457-474,488-497,501-503
+kiro-pugin/package.json
+  8121232c57be7f81 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "267a5a3bb6997c7a4c617951348fe461dbc949ca",
+  "prompts": {
+    "8121232c57be7f81": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "4d4fe5f5-50e9-456e-8d9d-9e78e6b456cd",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 3213,
+      "total_deletions": 2701,
+      "accepted_lines": 70,
+      "overriden_lines": 0
+    }
+  }
+}
