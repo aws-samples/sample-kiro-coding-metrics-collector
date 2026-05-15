@@ -43,30 +43,56 @@ export function findGitRoot(startPath: string): string | null {
 }
 
 /**
- * Scan direct subdirectories of the given path for git repositories.
+ * Scan subdirectories of the given path for git repositories.
  * Returns an array of absolute paths to git repo roots found.
- * Only scans one level deep to avoid excessive I/O.
+ *
+ * Recursively scans up to MAX_DEPTH levels to handle real-world cases where
+ * the actual git project lives deep in a multi-level workspace structure
+ * (e.g., workspace=monorepo, repos at monorepo/services/foo, monorepo/apps/bar).
+ *
+ * Skips common heavy directories (node_modules, build outputs, etc.) and stops
+ * descending once a git repo is found at a path (avoids walking into the repo's
+ * own working tree).
  */
 export function findGitReposInDir(dirPath: string): string[] {
+  const MAX_DEPTH = 5;
+  const SKIP_DIRS = new Set([
+    "node_modules", "dist", "build", "out", "target", ".next", ".nuxt",
+    "vendor", "venv", ".venv", "env", "__pycache__", ".mypy_cache",
+    ".pytest_cache", "site-packages", "coverage", "logs",
+  ]);
   const repos: string[] = [];
-  try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+
+  function scan(dir: string, depth: number): void {
+    if (depth > MAX_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const subDir = path.join(dirPath, entry.name);
+      if (!entry.isDirectory()) continue;
+      // 跳过隐藏目录和常见大目录
+      if (entry.name.startsWith(".")) continue;
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const subDir = path.join(dir, entry.name);
       const gitDir = path.join(subDir, ".git");
       try {
         const stat = fs.statSync(gitDir);
         if (stat.isDirectory() || stat.isFile()) {
+          // 找到 git repo，加入结果，不再深入它的子目录
           repos.push(subDir);
+          continue;
         }
       } catch {
-        // no .git here
+        // 该目录不是 git repo，继续递归扫描更深一层
       }
+      scan(subDir, depth + 1);
     }
-  } catch {
-    // can't read directory
   }
+
+  scan(dirPath, 1);
   return repos;
 }
 
@@ -416,26 +442,36 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   REPORTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
   REMOTE_URL=$(git config remote.origin.url 2>/dev/null)
   IDEM_KEY=$(echo -n "$COMMIT_SHA:$MACHINE_ID" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "$COMMIT_SHA")
-  # 获取 commit subject（%s），并做 JSON 字符串转义（反斜杠→\\\\、双引号→\\"、回车换行等控制字符）
-  COMMIT_MSG_RAW=$(git log -1 --pretty=%s "$COMMIT_SHA" 2>/dev/null || echo "")
-  COMMIT_MSG=$(printf '%s' "$COMMIT_MSG_RAW" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g' -e 's/\\t/\\\\t/g' -e 's/\\r/\\\\r/g' | tr -d '\\n')
   # 从 last_upload_payload.json 中从后往前查找最近的 [userSync] 记录，提取 user_id
   USER_ID=""
   if [ -f "$REPO_ROOT/.git/ai/last_upload_payload.json" ]; then
     USER_ID=$(tac "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
-    # macOS 没有 tac，用 tail -r 兜底
     if [ -z "$USER_ID" ]; then
       USER_ID=$(tail -r "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
     fi
   fi
-  # 构建 user_id JSON 片段（如果有值）
   USER_ID_JSON=""
   if [ -n "$USER_ID" ]; then
     USER_ID_JSON=",\\"user_id\\":\\"$USER_ID\\""
   fi
-  PAYLOAD="{\\"repo_name\\":\\"$REPO_NAME\\",\\"repo_remote_url\\":\\"$REMOTE_URL\\",\\"branch\\":\\"$BRANCH\\",\\"commit_sha\\":\\"$COMMIT_SHA\\",\\"commit_msg\\":\\"$COMMIT_MSG\\",\\"machine_id\\":\\"$MACHINE_ID\\",\\"user_name\\":\\"$USER_NAME\\",\\"user_email\\":\\"$USER_EMAIL\\",\\"reported_at\\":\\"$REPORTED_AT\\"$USER_ID_JSON,\\"commit_stats\\":$STATS}"
-  mkdir -p "$REPO_ROOT/.git/ai" 2>/dev/null
-  echo "[stats] [$REPORTED_AT] $PAYLOAD" >> "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null
+
+  # 构建 PAYLOAD：通过临时文件分段写入，避免 commit_msg 的多字节字符
+  # 在 shell 变量赋值时被错误转码（Windows GBK -> UTF-8 转换问题）。
+  # 关键：commit_msg 直接 git log → 文件 → cat 进 payload 文件，不经过 shell 变量。
+  AI_DIR="$REPO_ROOT/.git/ai"
+  mkdir -p "$AI_DIR" 2>/dev/null
+  COMMIT_MSG_FILE="$AI_DIR/.commit_msg.tmp"
+  PAYLOAD_FILE="$AI_DIR/.payload.tmp"
+  git log -1 --pretty=%s "$COMMIT_SHA" > "$COMMIT_MSG_FILE" 2>/dev/null
+  # 从文件读取并做简单 JSON 转义（双引号和反斜杠），去掉换行
+  COMMIT_MSG=$(cat "$COMMIT_MSG_FILE" 2>/dev/null | tr -d '\\n\\r' | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
+  # 拼接 PAYLOAD 到临时文件，用 -d @file 发送避免 shell 参数长度/编码问题
+  printf '{"repo_name":"%s","repo_remote_url":"%s","branch":"%s","commit_sha":"%s","commit_msg":"%s","machine_id":"%s","user_name":"%s","user_email":"%s","reported_at":"%s"%s,"commit_stats":%s}' "$REPO_NAME" "$REMOTE_URL" "$BRANCH" "$COMMIT_SHA" "$COMMIT_MSG" "$MACHINE_ID" "$USER_NAME" "$USER_EMAIL" "$REPORTED_AT" "$USER_ID_JSON" "$STATS" > "$PAYLOAD_FILE"
+
+  # 写本地审计日志
+  printf '[stats] [%s] ' "$REPORTED_AT" >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
+  cat "$PAYLOAD_FILE" >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
+  printf '\\n' >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
   # 清理 15 天前的行（纯 shell 实现）
   LOG_FILE="$REPO_ROOT/.git/ai/last_upload_payload.json"
   if [ -f "$LOG_FILE" ]; then
@@ -449,16 +485,22 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
       ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
     fi
   fi
-  # Windows 上 sh 脚本强制使用插件自带的 curl.exe，避免系统 curl 不存在或版本不兼容
-  # 非 Windows 使用系统 curl
-  CURL_CMD="${curlPath}"
-  if [ ! -f "$CURL_CMD" ]; then
-    CURL_CMD="curl"
-  fi
+  # Windows 上优先使用插件自带的 curl.exe，非 Windows 使用系统 curl
+  CURL_CMD="curl"
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [ -f "${curlPath}" ]; then
+        CURL_CMD="${curlPath}"
+      fi
+      ;;
+  esac
+  # 用 -d @PAYLOAD_FILE 直接传文件内容，避免 shell 变量编码丢失
   "$CURL_CMD" -s -X POST "${statsUrl}" \\
     -H "Content-Type: application/json" \\
     -H "X-Idempotency-Key: $IDEM_KEY" \\
-    -d "$PAYLOAD" >/dev/null 2>&1 || true
+    -d "@$PAYLOAD_FILE" >/dev/null 2>&1 || true
+  # 清理临时文件
+  rm -f "$COMMIT_MSG_FILE" "$PAYLOAD_FILE" 2>/dev/null
   # 清理残留的 git-ai 进程（Windows 上进程可能不断累积）
   taskkill //F //IM git-ai.exe 2>/dev/null || pkill -x git-ai 2>/dev/null || true
 ) &

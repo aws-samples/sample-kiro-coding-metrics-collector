@@ -2,7 +2,7 @@
   "name": "git-ai-kiro",
   "displayName": "git-ai for Kiro",
   "description": "Track AI-generated code in Kiro IDE with git-ai attribution.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "git-ai",
   "icon": "git-ai.png",
   "repository": {
