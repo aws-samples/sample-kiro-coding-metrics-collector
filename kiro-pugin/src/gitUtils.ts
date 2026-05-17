@@ -55,7 +55,7 @@ export function findGitRoot(startPath: string): string | null {
  * own working tree).
  */
 export function findGitReposInDir(dirPath: string): string[] {
-  const MAX_DEPTH = 5;
+  const MAX_DEPTH = 6;
   const SKIP_DIRS = new Set([
     "node_modules", "dist", "build", "out", "target", ".next", ".nuxt",
     "vendor", "venv", ".venv", "env", "__pycache__", ".mypy_cache",
@@ -73,8 +73,8 @@ export function findGitReposInDir(dirPath: string): string[] {
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      // 跳过隐藏目录和常见大目录
-      if (entry.name.startsWith(".")) continue;
+      // 只跳过 .git 目录本身，不跳过其他以 . 开头的目录（Windows 上有正常路径以 . 开头）
+      if (entry.name === ".git") continue;
       if (SKIP_DIRS.has(entry.name)) continue;
       const subDir = path.join(dir, entry.name);
       const gitDir = path.join(subDir, ".git");

@@ -781,8 +781,21 @@ export class SessionLogWatcher implements vscode.Disposable {
                     this.repos.push({ rootPath: normalizedRoot });
                     console.log(`[git-ai-kiro] Dynamically discovered sibling repo: ${normalizedRoot}`);
                   }
-                  // 将此 action 移到正确的 group
-                  const repoRelPath = normalizePath(candidatePath).slice(normalizePath(candidateGitRoot).length + 1);
+                  // 将此 action 移到正确的 group（Windows 大小写不敏感匹配）
+                  const normalizedCandidate = normalizePath(candidatePath);
+                  const normalizedGitRoot = normalizePath(candidateGitRoot);
+                  let repoRelPath: string;
+                  if (process.platform === "win32") {
+                    // Windows: 大小写不敏感前缀匹配
+                    const rootWithSlash = normalizedGitRoot.toLowerCase() + "/";
+                    if (normalizedCandidate.toLowerCase().startsWith(rootWithSlash)) {
+                      repoRelPath = normalizedCandidate.slice(rootWithSlash.length);
+                    } else {
+                      repoRelPath = normalizedCandidate.slice(normalizedGitRoot.length + 1);
+                    }
+                  } else {
+                    repoRelPath = normalizedCandidate.slice(normalizedGitRoot.length + 1);
+                  }
                   let targetGroup = groups.find((g) => normalizePath(g.repoPath).toLowerCase() === normalizedRoot.toLowerCase());
                   if (!targetGroup) {
                     targetGroup = { repoPath: normalizedRoot, actions: [] };

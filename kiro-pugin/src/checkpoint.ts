@@ -103,6 +103,27 @@ export function callCheckpointAgentV1(cwd: string, payload: object): Promise<boo
   return new Promise((resolve) => {
     console.log(`[git-ai-kiro] Spawning: ${bundledBinaryPath} checkpoint agent-v1 --hook-input stdin (cwd: ${cwd})`);
 
+    // Windows 上 git-ai 用 cwd（反斜杠）拼接 edited_filepaths（正斜杠）会产生混合路径，
+    // 导致 "Failed to find any git repositories" 错误。统一转为反斜杠。
+    let finalPayload = payload as Record<string, unknown>;
+    if (process.platform === "win32") {
+      const p = { ...finalPayload } as Record<string, unknown>;
+      if (Array.isArray(p.edited_filepaths)) {
+        p.edited_filepaths = (p.edited_filepaths as string[]).map((fp: string) => fp.replace(/\//g, "\\"));
+      }
+      if (p.dirty_files && typeof p.dirty_files === "object") {
+        const newDirty: Record<string, string> = {};
+        for (const [k, v] of Object.entries(p.dirty_files as Record<string, string>)) {
+          newDirty[k.replace(/\//g, "\\")] = v;
+        }
+        p.dirty_files = newDirty;
+      }
+      if (Array.isArray(p.will_edit_filepaths)) {
+        p.will_edit_filepaths = (p.will_edit_filepaths as string[]).map((fp: string) => fp.replace(/\//g, "\\"));
+      }
+      finalPayload = p;
+    }
+
     const proc = spawn(
       bundledBinaryPath!,
       ["checkpoint", "agent-v1", "--hook-input", "stdin"],
@@ -149,7 +170,7 @@ export function callCheckpointAgentV1(cwd: string, payload: object): Promise<boo
       }
     });
 
-    const payloadStr = JSON.stringify(payload);
+    const payloadStr = JSON.stringify(finalPayload);
     console.log(`[git-ai-kiro] Payload size: ${payloadStr.length} bytes`);
     proc.stdin.write(payloadStr);
     proc.stdin.end();
