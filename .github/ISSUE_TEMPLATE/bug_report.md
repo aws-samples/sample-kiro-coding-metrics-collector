@@ -19,7 +19,7 @@ assignees: ''
 简要描述遇到的问题。
 
 ## 复现步骤
-
+描述实际发生问题的操作, 例如: 
 1. 打开 Kiro IDE，加载项目 `xxx`
 2. 使用 AI 编辑文件 `xxx`
 3. 执行 `git commit -m "xxx"`
@@ -60,7 +60,5 @@ assignees: ''
 
 ## 补充信息
 
-- 是否使用了 git commit --amend？
-- 是否一次 AI 操作修改了多个文件后分多次 commit？
 - Workspace 中 git 项目的目录层级结构是怎样的？
 - 是否有网络代理或防火墙限制？
