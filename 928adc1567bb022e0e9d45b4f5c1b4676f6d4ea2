@@ -1,0 +1,23 @@
+.github/ISSUE_TEMPLATE/bug_report.md
+  8121232c57be7f81 1-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "928adc1567bb022e0e9d45b4f5c1b4676f6d4ea2",
+  "prompts": {
+    "8121232c57be7f81": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "4d4fe5f5-50e9-456e-8d9d-9e78e6b456cd",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 264,
+      "total_deletions": 0,
+      "accepted_lines": 64,
+      "overriden_lines": 0
+    }
+  }
+}
