@@ -128,15 +128,21 @@ cp target/x86_64-pc-windows-gnu/release/git-ai.exe ../kiro-pugin/bin/git-ai.exe
 cp target/x86_64-unknown-linux-gnu/release/git-ai ../kiro-pugin/bin/git-ai-linux
 cd ../kiro-pugin
 
-# 3. Package VSIX (update version in package.json first)
-npx vsce package --allow-missing-repository --out git-ai-kiro-0.1.9.vsix
+# 3. Copy core source files into support-sources/ for customer-support skill
+sh scripts/copy-support-sources.sh                      # macOS / Linux
+# Windows PowerShell 用：
+# powershell -ExecutionPolicy Bypass -File scripts\copy-support-sources.ps1
+
+# 4. Package VSIX (update version in package.json first)
+npx vsce package --allow-missing-repository --out git-ai-kiro-0.2.2.vsix
 ```
 
-The `bin/` directory should contain:
-- `git-ai` — macOS arm64 binary
-- `git-ai.exe` — Windows x64 binary
-- `git-ai-linux` — Linux x64 binary (optional, for Linux dashboard server)
-- `curl.exe` — Bundled curl for Windows (fallback when system curl is unavailable)
+> 一键打包：macOS/Linux 用 `npm run package:local`，Windows 用 `npm run package:local:win`（自动调用对应平台的 `copy-support-sources` 脚本）。
+
+The plugin VSIX includes:
+- `bin/` — git-ai binaries (macOS / Windows / Linux) + curl.exe for Windows fallback
+- `out/` — compiled JS
+- `support-sources/` — TypeScript / Rust source copies for the `kiro-plugin-customer-support` skill (so customer support can analyze code without GitHub access)
 
 ## Key Metrics
 

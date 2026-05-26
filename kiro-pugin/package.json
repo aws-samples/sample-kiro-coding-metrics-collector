@@ -77,7 +77,10 @@
     "test": "vitest --run",
     "lint": "eslint src",
     "build:binary": "cargo build --release --manifest-path ../../Cargo.toml && node scripts/copy-binary.js",
-    "package:local": "npm run build:binary && npm run compile && npx vsce package",
+    "copy:support-sources": "sh scripts/copy-support-sources.sh",
+    "copy:support-sources:win": "powershell -ExecutionPolicy Bypass -File scripts\\copy-support-sources.ps1",
+    "package:local": "npm run build:binary && npm run compile && npm run copy:support-sources && npx vsce package",
+    "package:local:win": "npm run build:binary && npm run compile && npm run copy:support-sources:win && npx vsce package",
     "package:darwin-arm64": "npm run build:binary && npm run compile && npx vsce package --target darwin-arm64",
     "package:win32-x64": "npm run build:binary && npm run compile && npx vsce package --target win32-x64",
     "package:all": "npm run package:darwin-arm64 && npm run package:win32-x64"
