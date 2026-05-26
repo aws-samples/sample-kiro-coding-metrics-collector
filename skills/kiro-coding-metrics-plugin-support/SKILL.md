@@ -1,11 +1,10 @@
 ---
 name: kiro-coding-metrics-plugin-support
 description: Diagnose git-ai-kiro plugin issues reported by customers. Use when a user reports that AI/human attribution stats are wrong, post-commit upload fails, hooks don't run, or anything stops working in the plugin. Determines whether the root cause is the customer's environment (network/path/permission/config) or a code bug (escalate to developers).
+compatibility: Requires git, curl, sh, and access to GitHub raw content for source code lookups.
 metadata:
-  version: 3.1.0
-  github_source: https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock
-compatibility:
-  required_tools: [git, curl, sh, web_fetch]
+  version: "3.1.0"
+  github_source: "https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock"
 ---
 
 # git-ai-kiro 插件问题诊断方法论
