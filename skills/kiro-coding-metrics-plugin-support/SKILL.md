@@ -146,7 +146,7 @@ cat <repo>/.git/ai/working_logs/<sha>/INITIAL
 
 **注意**：
 - 客户机上 `out/` 目录是编译后的 JS（`tsc` 输出），不是 TS 源码
-- 行号要对应到 `support-sources/kiro-pugin/src/<file>.ts` 而非 `out/<file>.js`
+- 行号要对应到 `support-sources/kiro-plugin/src/<file>.ts` 而非 `out/<file>.js`
 
 ---
 

@@ -1,6 +1,6 @@
 #!/bin/sh
-# 把核心源码复制到 kiro-pugin/support-sources/ 下，让 VSIX 携带源码用于客户支持时分析
-# 与 skills/kiro-plugin-customer-support/references/code-lookup.md 列出的文件保持同步
+# 把核心源码复制到 kiro-plugin/support-sources/ 下，让 VSIX 携带源码用于客户支持时分析
+# 与 skills/kiro-coding-metrics-plugin-support/references/code-lookup.md 列出的文件保持同步
 #
 # 在 vsce package 之前运行
 
@@ -14,7 +14,7 @@ DEST="$PLUGIN_ROOT/support-sources"
 echo "Copying core source files to $DEST"
 
 rm -rf "$DEST"
-mkdir -p "$DEST/kiro-pugin/src"
+mkdir -p "$DEST/kiro-plugin/src"
 mkdir -p "$DEST/git-ai-src/src/commands"
 mkdir -p "$DEST/git-ai-src/src/authorship"
 mkdir -p "$DEST/git-ai-src/src/git"
@@ -35,7 +35,7 @@ for f in \
   extension.ts \
 ; do
   if [ -f "$PLUGIN_ROOT/src/$f" ]; then
-    cp "$PLUGIN_ROOT/src/$f" "$DEST/kiro-pugin/src/$f"
+    cp "$PLUGIN_ROOT/src/$f" "$DEST/kiro-plugin/src/$f"
   fi
 done
 
@@ -58,17 +58,17 @@ cat > "$DEST/README.md" <<'EOF'
 这个目录包含插件核心模块的源码副本，用于客户支持时的问题分析。
 
 打包时由 `scripts/copy-support-sources.sh` 自动从主项目复制，与
-`skills/kiro-plugin-customer-support/references/code-lookup.md` 列出的文件保持一致。
+`skills/kiro-coding-metrics-plugin-support/references/code-lookup.md` 列出的文件保持一致。
 
 ## 用途
 
 - 客户机上插件安装后，这些文件位于 `<extension-dir>/support-sources/`
-- 支持工程师可通过 `kiro-plugin-customer-support` skill 直接读取
+- 支持工程师可通过 `kiro-coding-metrics-plugin-support` skill 直接读取
 - 不需要客户提供源码，也不需要工程师从 GitHub 拉取
 
 ## 包含范围
 
-- `kiro-pugin/src/` — TypeScript 插件源码（SessionLogWatcher / Hook / userSync 等）
+- `kiro-plugin/src/` — TypeScript 插件源码（SessionLogWatcher / Hook / userSync 等）
 - `git-ai-src/src/` — git-ai Rust 后端核心模块
 
 不包含 dashboard 服务端代码（不属于客户机插件）。

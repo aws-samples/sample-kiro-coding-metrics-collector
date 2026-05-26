@@ -10,7 +10,7 @@ along with their respective licenses.
 - **Source**: https://github.com/nicolo-ribaudo/git-ai
 - **License**: Apache License 2.0
 - **Copyright**: Copyright 2025 Aidan Cunniffe
-- **Location in this project**: `git-ai-src/` (source code), `kiro-pugin/bin/` (compiled binaries)
+- **Location in this project**: `git-ai-src/` (source code), `kiro-plugin/bin/` (compiled binaries)
 - **Usage**: AI/human code attribution tracking engine. The compiled Rust binary is bundled
   inside the Kiro IDE plugin (VSIX) and invoked as a CLI tool for checkpoint management,
   post-commit processing, and stats calculation.

@@ -122,9 +122,9 @@
 ```
 
 **关键代码**（GitHub）：
-- `kiro-pugin/src/repoRouter.ts::findRepoForFile` — Windows 大小写不敏感
-- `kiro-pugin/src/repoRouter.ts::toRepoRelativePath` — `path.resolve` 处理 `..`
-- `kiro-pugin/src/sessionLogWatcher.ts` 的 filter + re-route 块
+- `kiro-plugin/src/repoRouter.ts::findRepoForFile` — Windows 大小写不敏感
+- `kiro-plugin/src/repoRouter.ts::toRepoRelativePath` — `path.resolve` 处理 `..`
+- `kiro-plugin/src/sessionLogWatcher.ts` 的 filter + re-route 块
 
 **典型异常**：
 - 文件路径以 workspace 父目录的目录名开头（如 workspace 是 `barcm`，filePath 是 `barcm/code/...`）→ 路径解析多嵌一层

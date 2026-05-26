@@ -460,8 +460,8 @@ npm start
 
 | 交付物 | 路径 | 说明 |
 |--------|------|------|
-| Kiro IDE 插件源码 | `kiro-pugin/` | TypeScript 源码，含 SessionLogWatcher、Checkpoint、CommitWatcher 等模块 |
-| 插件 VSIX 包 | `kiro-pugin/git-ai-kiro-0.1.2.vsix` | 可直接安装的插件包（内置三平台 git-ai 二进制） |
+| Kiro IDE 插件源码 | `kiro-plugin/` | TypeScript 源码，含 SessionLogWatcher、Checkpoint、CommitWatcher 等模块 |
+| 插件 VSIX 包 | `kiro-plugin/git-ai-kiro-0.1.2.vsix` | 可直接安装的插件包（内置三平台 git-ai 二进制） |
 | Dashboard 服务 | `kiro-dashboard/` | Node.js 应用，含 ingest API、查询 API、前端页面 |
 | 架构设计文档 | `docs/` | 流程图、测试方案、本报告 |
 | 原型报告 | `docs/prototype-report.md` | 本文 |
@@ -751,7 +751,7 @@ $stats = $statsJson | ConvertFrom-Json
 
 ```
 ai-code-coverage-collector/
-├── kiro-pugin/                          # Kiro IDE 插件
+├── kiro-plugin/                          # Kiro IDE 插件
 │   ├── bin/                             # git-ai 二进制（三平台）
 │   │   ├── git-ai                       # macOS (darwin-arm64)
 │   │   ├── git-ai-linux                 # Linux (x86_64)
@@ -812,8 +812,8 @@ ai-code-coverage-collector/
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| Stats Upload API | `kiro-pugin/docs/stats-upload-api.md` | 上报接口详细定义 |
-| Session Log 调查报告 | `kiro-pugin/docs/kiro-session-log-investigation-v2.md` | Execution Log 格式分析 |
+| Stats Upload API | `kiro-plugin/docs/stats-upload-api.md` | 上报接口详细定义 |
+| Session Log 调查报告 | `kiro-plugin/docs/kiro-session-log-investigation-v2.md` | Execution Log 格式分析 |
 | Dashboard 服务说明 | `kiro-dashboard/docs/dashboard-service-introduction.md` | 用户管理和 AWS SDK 操作 |
-| 手动测试方案 | `kiro-pugin/docs/manual-test-plan.md` | 60 个测试用例 |
-| Session Context V2 | `kiro-pugin/docs/session-context-v2.md` | 最新修改记录 |
+| 手动测试方案 | `kiro-plugin/docs/manual-test-plan.md` | 60 个测试用例 |
+| Session Context V2 | `kiro-plugin/docs/session-context-v2.md` | 最新修改记录 |

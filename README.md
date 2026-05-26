@@ -44,7 +44,7 @@ Metrics are calculated per-commit and reported to a central Dashboard for aggreg
 ## Project Structure
 
 ```
-├── kiro-pugin/                  # Kiro IDE plugin (TypeScript)
+├── kiro-plugin/                  # Kiro IDE plugin (TypeScript)
 │   ├── bin/                     # git-ai binaries (macOS, Linux, Windows)
 │   ├── src/
 │   │   ├── extension.ts         # Plugin entry point
@@ -100,7 +100,7 @@ The service automatically syncs users from IAM Identity Center, sessions from Cl
 
 1. Open Kiro IDE
 2. Extensions → `...` → Install from VSIX
-3. Select `kiro-pugin/git-ai-kiro-x.y.z.vsix`
+3. Select `kiro-plugin/git-ai-kiro-x.y.z.vsix`
 4. Restart IDE
 
 The plugin auto-discovers git repos in the workspace, installs post-commit hooks, and begins monitoring AI edits.
@@ -110,7 +110,7 @@ The plugin auto-discovers git repos in the workspace, installs post-commit hooks
 Prerequisites: Node.js >= 20, Rust toolchain (for git-ai binary compilation).
 
 ```bash
-cd kiro-pugin
+cd kiro-plugin
 npm install
 
 # 1. Compile TypeScript
@@ -123,10 +123,10 @@ cargo zigbuild --release --target x86_64-pc-windows-gnu --bin git-ai   # Windows
 cargo zigbuild --release --target x86_64-unknown-linux-gnu --bin git-ai # Linux x64
 
 # Copy binaries to plugin bin/
-cp target/release/git-ai ../kiro-pugin/bin/git-ai
-cp target/x86_64-pc-windows-gnu/release/git-ai.exe ../kiro-pugin/bin/git-ai.exe
-cp target/x86_64-unknown-linux-gnu/release/git-ai ../kiro-pugin/bin/git-ai-linux
-cd ../kiro-pugin
+cp target/release/git-ai ../kiro-plugin/bin/git-ai
+cp target/x86_64-pc-windows-gnu/release/git-ai.exe ../kiro-plugin/bin/git-ai.exe
+cp target/x86_64-unknown-linux-gnu/release/git-ai ../kiro-plugin/bin/git-ai-linux
+cd ../kiro-plugin
 
 # 3. Copy core source files into support-sources/ for customer-support skill
 sh scripts/copy-support-sources.sh                      # macOS / Linux
@@ -142,7 +142,7 @@ npx vsce package --allow-missing-repository --out git-ai-kiro-0.2.2.vsix
 The plugin VSIX includes:
 - `bin/` — git-ai binaries (macOS / Windows / Linux) + curl.exe for Windows fallback
 - `out/` — compiled JS
-- `support-sources/` — TypeScript / Rust source copies for the `kiro-plugin-customer-support` skill (so customer support can analyze code without GitHub access)
+- `support-sources/` — TypeScript / Rust source copies for the `kiro-coding-metrics-plugin-support` skill (so customer support can analyze code without GitHub access)
 
 ## Key Metrics
 
@@ -172,8 +172,8 @@ Excluded from tracking: merge/rebase/pull operations, engineering directories (n
 ## Design Documents
 
 - [Prototype Report](docs/prototype-report.md) — Full architecture, deployment, and security documentation
-- [Stats Upload API](kiro-pugin/docs/stats-upload-api.md) — Ingest endpoint specification
-- [Session Log Investigation](kiro-pugin/docs/kiro-session-log-investigation-v2.md) — Execution log format analysis
+- [Stats Upload API](kiro-plugin/docs/stats-upload-api.md) — Ingest endpoint specification
+- [Session Log Investigation](kiro-plugin/docs/kiro-session-log-investigation-v2.md) — Execution log format analysis
 - [Dashboard Service](kiro-dashboard/docs/dashboard-service-introduction.md) — User management and AWS SDK integration
 - [Manual Test Plan](docs/manual-test-plan.md) — 60 test cases covering all scenarios
 

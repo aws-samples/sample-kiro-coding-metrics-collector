@@ -17,12 +17,12 @@
 
 | 文件 | 关键函数 | 主要职责 |
 |------|---------|---------|
-| `kiro-pugin/src/sessionLogWatcher.ts` | `start()` / `processExecutionLog()` | 监听文件变化、解析 log、调度 checkpoint |
-| `kiro-pugin/src/sessionLogParser.ts` | `parseExecutionLog()` / `extractFormatAWriteActions()` / `extractFormatBWriteActions()` | 两种格式解析 |
-| `kiro-pugin/src/sessionLogScanner.ts` | `getWorkspaceSessionIds()` | workspace 隔离 |
-| `kiro-pugin/src/checkpointPayload.ts` | `buildCheckpointPayload()` | 构建 git-ai checkpoint 输入 |
-| `kiro-pugin/src/repoRouter.ts` | `findRepoForFile()` / `groupActionsByRepo()` / `toRepoRelativePath()` | 多 repo 路由（**Windows 大小写敏感问题在此**） |
-| `kiro-pugin/src/workspacePathEncoder.ts` | `WriteAction` interface 定义 | 数据类型 |
+| `kiro-plugin/src/sessionLogWatcher.ts` | `start()` / `processExecutionLog()` | 监听文件变化、解析 log、调度 checkpoint |
+| `kiro-plugin/src/sessionLogParser.ts` | `parseExecutionLog()` / `extractFormatAWriteActions()` / `extractFormatBWriteActions()` | 两种格式解析 |
+| `kiro-plugin/src/sessionLogScanner.ts` | `getWorkspaceSessionIds()` | workspace 隔离 |
+| `kiro-plugin/src/checkpointPayload.ts` | `buildCheckpointPayload()` | 构建 git-ai checkpoint 输入 |
+| `kiro-plugin/src/repoRouter.ts` | `findRepoForFile()` / `groupActionsByRepo()` / `toRepoRelativePath()` | 多 repo 路由（**Windows 大小写敏感问题在此**） |
+| `kiro-plugin/src/workspacePathEncoder.ts` | `WriteAction` interface 定义 | 数据类型 |
 
 **Format A 字段**（execution log）：
 - `actions[].actionType`：`replace` / `create` / `write` / `append` / `editCode` / `delete` / `smartRelocate`
@@ -40,11 +40,11 @@
 
 | 文件 | 关键函数 | 主要职责 |
 |------|---------|---------|
-| `kiro-pugin/src/gitUtils.ts` | `installPreCommitHook()` / `installPostCommitHook()` / `buildHookSectionUnix()` / `buildHookSectionWindows()` | 生成并安装 hook 脚本 |
-| `kiro-pugin/src/gitUtils.ts` | `findGitRoot()` / `findGitReposInDir()` | repo 发现 |
-| `kiro-pugin/src/gitUtils.ts` | `canRunShOnWindows()` / `canRunPowerShellHere()` / `findPowerShellExe()` | Windows 平台探测 |
-| `kiro-pugin/src/checkpoint.ts` | `callCheckpointAgentV1()` | 调用 git-ai checkpoint（**路径分隔符统一在此**） |
-| `kiro-pugin/src/apiConfig.ts` | `STATS_URL` / `USER_SYNC_URL` | dashboard endpoint |
+| `kiro-plugin/src/gitUtils.ts` | `installPreCommitHook()` / `installPostCommitHook()` / `buildHookSectionUnix()` / `buildHookSectionWindows()` | 生成并安装 hook 脚本 |
+| `kiro-plugin/src/gitUtils.ts` | `findGitRoot()` / `findGitReposInDir()` | repo 发现 |
+| `kiro-plugin/src/gitUtils.ts` | `canRunShOnWindows()` / `canRunPowerShellHere()` / `findPowerShellExe()` | Windows 平台探测 |
+| `kiro-plugin/src/checkpoint.ts` | `callCheckpointAgentV1()` | 调用 git-ai checkpoint（**路径分隔符统一在此**） |
+| `kiro-plugin/src/apiConfig.ts` | `STATS_URL` / `USER_SYNC_URL` | dashboard endpoint |
 
 **Hook 关键逻辑速查**：
 
@@ -75,9 +75,9 @@ fi
 
 | 文件 | 关键函数 | 主要职责 |
 |------|---------|---------|
-| `kiro-pugin/src/userSync.ts` | `start()` / `maybeDoUserSync()` / `doUserSync()` | userSync 触发与上报 |
-| `kiro-pugin/src/userSync.ts` | `stripIdentityStorePrefix()` | 剥离 `d-<storeId>.` 前缀 |
-| `kiro-pugin/src/qClientWatcher.ts` | `QClientLogWatcher.start()` / `extractLatestUserId()` | 监听 q-client.log 中的 GetUsageLimitsCommand |
+| `kiro-plugin/src/userSync.ts` | `start()` / `maybeDoUserSync()` / `doUserSync()` | userSync 触发与上报 |
+| `kiro-plugin/src/userSync.ts` | `stripIdentityStorePrefix()` | 剥离 `d-<storeId>.` 前缀 |
+| `kiro-plugin/src/qClientWatcher.ts` | `QClientLogWatcher.start()` / `extractLatestUserId()` | 监听 q-client.log 中的 GetUsageLimitsCommand |
 
 **关键逻辑**：
 - 4 小时去重（看 `last_upload_payload.json` 中最近的 `[userSync]` 时间戳）
@@ -116,15 +116,15 @@ git-ai notes --ref=ai show <SHA>   # 不存在；用 git notes
 
 ```bash
 # 客户机上：直接读 support-sources（macOS）
-cat ~/.kiro/extensions/git-ai.git-ai-kiro-*/support-sources/kiro-pugin/src/sessionLogWatcher.ts
+cat ~/.kiro/extensions/git-ai.git-ai-kiro-*/support-sources/kiro-plugin/src/sessionLogWatcher.ts
 
 # 客户机上：直接读 support-sources（Windows PowerShell）
-Get-Content "$env:USERPROFILE\.kiro\extensions\git-ai.git-ai-kiro-*\support-sources\kiro-pugin\src\sessionLogWatcher.ts"
+Get-Content "$env:USERPROFILE\.kiro\extensions\git-ai.git-ai-kiro-*\support-sources\kiro-plugin\src\sessionLogWatcher.ts"
 
 # 远程：从 GitHub 拉最新版（验证是否已修复）
-web_fetch https://raw.githubusercontent.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock/main/kiro-pugin/src/sessionLogWatcher.ts
+web_fetch https://raw.githubusercontent.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock/main/kiro-plugin/src/sessionLogWatcher.ts
 ```
 
 **注意**：
 - `support-sources/` 是打包时刻的快照，可能落后于 GitHub main 分支。客户用的版本就以本地为准。
-- 客户机上 `out/` 目录是编译后的 JS，行号要对应到 `support-sources/kiro-pugin/src/<file>.ts` 而非 `out/<file>.js`。
+- 客户机上 `out/` 目录是编译后的 JS，行号要对应到 `support-sources/kiro-plugin/src/<file>.ts` 而非 `out/<file>.js`。

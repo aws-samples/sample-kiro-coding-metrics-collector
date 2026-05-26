@@ -152,7 +152,7 @@
 ```
 症状：amend commit 数据全部计入人工
 复现：用户 commit SHA 16d8df9（amend from 60064e1）
-根因：kiro-pugin/src/gitUtils.ts buildHookSectionUnix 中
+根因：kiro-plugin/src/gitUtils.ts buildHookSectionUnix 中
      OLD_SHA=$(git rev-parse -q --verify ORIG_HEAD ...)
      ORIG_HEAD 不会被 git commit --amend 更新
 建议：改用 HEAD@{1}（reflog 前一条），它是被 amend 替换掉的真实 SHA
