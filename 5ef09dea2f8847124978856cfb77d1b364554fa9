@@ -1,11 +1,11 @@
 kiro-plugin/scripts/copy-support-sources.sh
   8121232c57be7f81 1-2,4-60,62-65,67-87
   8c7f01972dcfbb18 3,61,66
+README.md
+  8c7f01972dcfbb18 145
 kiro-plugin/scripts/copy-support-sources.ps1
   8c7f01972dcfbb18 2,75,80
   f5b7c3913206a893 10-11,22-27,46,63,68-69,74,79,85-86,91-95,97-98,102
-README.md
-  8c7f01972dcfbb18 145
 ---
 {
   "schema_version": "authorship/3.0.0",
