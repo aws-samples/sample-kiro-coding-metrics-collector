@@ -1,0 +1,36 @@
+skills/kiro-coding-metrics-plugin-support/SKILL.md
+  8c7f01972dcfbb18 4,6-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "9e4262de7dee399732edd9cae5f0005d08803aa5",
+  "prompts": {
+    "8c7f01972dcfbb18": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "f8ec6d11-88bc-44ee-9a1c-f479ce95c038",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 30,
+      "total_deletions": 40,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    },
+    "f5b7c3913206a893": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "44b4bdd0-a98f-41b8-a3ce-a017f59f4bca",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
