@@ -1,0 +1,63 @@
+skills/kiro-coding-metrics-plugin-support/SKILL.md
+  8c7f01972dcfbb18 2
+  8c7f01972dcfbb18 5,97,153-214,250-251
+README.md
+  8c7f01972dcfbb18 145
+  f5b7c3913206a893 132-134,140
+kiro-pugin/package.json
+  f5b7c3913206a893 80-83
+skills/kiro-coding-metrics-plugin-support/references/methodology.md
+  8c7f01972dcfbb18 244,246-330,353-364,370
+kiro-pugin/scripts/copy-support-sources.sh
+  8c7f01972dcfbb18 3,61,66
+  8121232c57be7f81 1-2,4-60,62-65,67-87
+kiro-pugin/scripts/copy-support-sources.ps1
+  8c7f01972dcfbb18 2,75,80
+  f5b7c3913206a893 10-11,22-27,46,63,68-69,74,79,85-86,91-98,102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "5bc3147878fd7de2fbef5d9b8b37463f41046e79",
+  "prompts": {
+    "8121232c57be7f81": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "4d4fe5f5-50e9-456e-8d9d-9e78e6b456cd",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas <haozhas@amazon.com>",
+      "messages": [],
+      "total_additions": 92,
+      "total_deletions": 285,
+      "accepted_lines": 86,
+      "overriden_lines": 1
+    },
+    "8c7f01972dcfbb18": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "f8ec6d11-88bc-44ee-9a1c-f479ce95c038",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas <haozhas@amazon.com>",
+      "messages": [],
+      "total_additions": 3780,
+      "total_deletions": 268,
+      "accepted_lines": 175,
+      "overriden_lines": 0
+    },
+    "f5b7c3913206a893": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "44b4bdd0-a98f-41b8-a3ce-a017f59f4bca",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas <haozhas@amazon.com>",
+      "messages": [],
+      "total_additions": 500,
+      "total_deletions": 323,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    }
+  }
+}
