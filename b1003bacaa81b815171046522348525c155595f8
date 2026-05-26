@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "b1003bacaa81b815171046522348525c155595f8",
+  "prompts": {
+    "f5b7c3913206a893": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "44b4bdd0-a98f-41b8-a3ce-a017f59f4bca",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 10,
+      "total_deletions": 2,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
