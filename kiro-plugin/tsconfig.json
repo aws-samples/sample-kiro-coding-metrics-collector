@@ -9,5 +9,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "exclude": ["scripts", "node_modules", "temp", "vitest.config.ts"]
+  "exclude": ["scripts", "node_modules", "temp", "vitest.config.ts", "support-sources", "src/__tests__"]
 }
