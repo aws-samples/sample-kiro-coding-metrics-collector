@@ -73,6 +73,27 @@
 | user_id 异常（含敏感前缀） | userSync.ts | stripIdentityStorePrefix 是否生效 |
 | email 是 "Unknown" | userSync.ts | kiro-cli whoami 是否可用 / dashboard 解析逻辑 |
 
+### 类别 E：性能问题（hook 慢 / 进程堆积 / IDE 卡顿）
+
+性能症状有完整专题：参见 `references/performance-optimization.md`。这里只给入口索引：
+
+| 症状 | 跳转章节 | 一句话判断 |
+|------|---------|----------|
+| `git commit` 命令在终端等 30s+ 才返回 | `performance-optimization.md` §3 setsid 后台化 | 看 hook 内是否有 `setsid -f` / `_gitai_kiro_body`，缺失则版本 < 0.2.9 |
+| 同仓库 D 盘 commit ≫ C 盘 | `performance-optimization.md` §2 慢盘环境识别 | 让客户跑两次 `git diff --shortstat`，第二次明显快则是 cache 效应 |
+| 任务管理器一堆 git-ai.exe | `performance-optimization.md` §5 进程治理 | 0.2.9+ 应该不再有；老版本是 hook 末尾 taskkill 导致 / 后端无锁导致 |
+| 多对话框并发 AI 编辑后 IDE 卡 | `performance-optimization.md` §5.2 双层防护 | 看 checkpoint.ts 是否有 per-repo 队列、repo_storage.rs 是否有 fs2 advisory lock |
+| 升级新版后部分客户变慢（部分客户变快） | `performance-optimization.md` §7 反优化教训 | 警惕 git diff 顺序改动导致 cache warming 丢失 |
+| hook 总耗时远大于 GITAI-TIMING 各阶段之和 | `performance-optimization.md` §6 fork 风暴 | shell 端 `printf|sed` / `$(date)` 等子进程开销 |
+| 客户报"hook 跑了半天"，问怎么诊断 | `performance-optimization.md` §8 GITAI-TIMING + §10 排查命令 | 直接让客户提供 post-commit-*.log 中的 `GITAI-TIMING:` 行 |
+
+**性能症状必问环境信息**（Step 1 时一并问到）：
+
+- 仓库所在卷类型（HDD / SSD / 网络盘 / 加密盘）
+- Windows Defender 是否对仓库目录与 git-ai.exe 做了排除
+- 是否有企业 EDR / DLP（CrowdStrike / Carbon Black 等）
+- `package.json` 里的插件版本（性能时间线见 `performance-optimization.md` §9）
+
 ---
 
 ## 每个阶段的关键证据清单
@@ -146,6 +167,7 @@
 - `git-ai stderr: Failed to find any git repositories. Orphaned files: [...]` → cwd + filepath 拼接出问题（Windows 反斜杠/正斜杠混合）
 - `Payload size: 0 bytes` → buildCheckpointPayload 返回空
 - spawn 失败 → 二进制路径不对 / 权限不足
+- 多对话框并发触发同一 repo 的 spawn 风暴 → 见 `performance-optimization.md` §5.2（前端 per-repo 队列 + 后端 fs2 文件锁）
 
 ### 阶段 4 — working_logs
 
@@ -178,7 +200,7 @@ working_logs/<base_sha>/
 
 **主要内容**：
 ```sh
-taskkill //F //IM git-ai.exe || pkill -x git-ai || true   # 清残留进程
+taskkill //F //IM git-ai.exe || pkill -x git-ai || true   # 清残留进程（注：post-commit hook 在 0.2.9+ 已删除该行，pre-commit 保留）
 "<binaryPath>" checkpoint human                            # 触发 human checkpoint
 ```
 
@@ -196,12 +218,15 @@ taskkill //F //IM git-ai.exe || pkill -x git-ai || true   # 清残留进程
 - `git -C <repo> notes --ref=ai show <sha>` 输出
   - `prompts: {}` 为空 = 没归属任何 AI prompt
   - `prompts.<id>.accepted_lines` = 该 prompt 累计接受行数
+- `<repo>/.git/ai/logs/post-commit-YYYY-MM-DD.log` 中的 `GITAI-TIMING:` 阶段计时（性能问题必看，详见 `performance-optimization.md` §8）
 
 **关键代码**（GitHub）：
 - `git-ai-src/src/commands/git_ai_handlers.rs::handle_post_commit` — `--amend-from` 处理
 - `git-ai-src/src/authorship/post_commit.rs::post_commit` — 普通提交路径
 - `git-ai-src/src/authorship/rebase_authorship.rs::rewrite_authorship_after_commit_amend_with_snapshot` — amend 路径
 - `git-ai-src/src/authorship/virtual_attribution.rs::to_authorship_log_and_initial_working_log` — 行级归属计算
+
+**0.2.9+ 新结构**：hook body 整体被 `_gitai_kiro_body()` 包裹，由 `setsid -f bash -c ...` 启动。看 hook 文件首行如果是 `_gitai_kiro_body() {` 而不是 `(`，就是新版结构（详见 `performance-optimization.md` §3）。
 
 ### 阶段 5c — stats 计算 + 上报
 
@@ -215,6 +240,7 @@ taskkill //F //IM git-ai.exe || pkill -x git-ai || true   # 清残留进程
 - `last_upload_payload.json` 中本次 commit 的 [stats] 行存在但 `ai_additions=0` → git note 已是空 prompts，问题在阶段 5b
 - `[stats]` 行不存在 → curl 失败（看 stderr 或网络）
 - payload 中 `commit_msg=""` 但实际有消息 → commit_msg 处理出问题
+- 0.2.8+ 该阶段已被异步化，看到 hook 日志里有 `===== async upload begin =====` 和 `===== async upload end =====` 包裹是正常的
 
 ### 阶段 6 — Dashboard
 
@@ -257,4 +283,15 @@ sh <repo>/.git/hooks/post-commit
 
 # 看插件激活日志（DevTools Console）
 # Help → Toggle Developer Tools → Console → 筛选 [git-ai-kiro]
+
+# === 性能相关（详见 performance-optimization.md §10）===
+
+# 看 hook 是否是 0.2.9+ 新版（含 setsid 启动逻辑）
+grep -E "setsid -f|_gitai_kiro_body|flock -n 200" <repo>/.git/hooks/post-commit
+
+# 看 GITAI-TIMING 各阶段
+grep 'GITAI-TIMING:' <repo>/.git/ai/logs/post-commit-*.log | tail -20
+
+# 看 flock 是否生效
+grep 'acquired post-commit lock\|skipped due to lock' <repo>/.git/ai/logs/post-commit-*.log
 ```

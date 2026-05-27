@@ -156,9 +156,33 @@ to_authorship_log:                        # to_authorship_log_and_initial_workin
 
 ## 4. DevTools Console 日志（VSCode/Kiro IDE 主进程）
 
-获取方式：Help → Toggle Developer Tools → Console → 筛选 `[git-ai-kiro]`
+获取方式：`Help`（帮助）→ `Toggle Developer Tools`（切换开发人员工具）→ `Console` → 筛选 `[git-ai-kiro]`
 
-### 关键日志阶段
+快捷键：Windows `Ctrl+Shift+I`，macOS `Cmd+Option+I`。
+
+### 4.1 让客户复制日志的标准操作
+
+让客户**先打开 DevTools 再复现**，否则关闭过的 Console 历史日志已丢：
+
+```
+1. 菜单 Help → Toggle Developer Tools
+2. 切到 Console 标签（顶部）
+3. 顶部 Filter 输入框输入：git-ai-kiro（只显示插件相关日志）
+4. 复现问题（执行之前的步骤：AI 编辑 / git commit / 等）
+5. 复制日志：
+   方式 A（推荐）：Ctrl/Cmd+A 全选 → Ctrl/Cmd+C → 粘贴到回复
+   方式 B：在 Console 区域右键 → "Save as..." → 保存成 .log 发我
+   方式 C：右键空白处 → "Clear console" 之前先复制（避免误清）
+```
+
+**注意事项**：
+
+- 复制前确认 Filter 是 `git-ai-kiro`，避免把无关日志一起复制（无关日志可能含敏感信息）
+- 时间戳：Console 默认隐藏时间戳，可在 Console 设置（齿轮图标）里勾选 `Show timestamps`
+- DevTools 关闭后**不会保留历史日志**，所以让客户先开后复现
+- 客户机重启 IDE 后旧 Console 日志全部消失，必须当场捕获
+
+### 4.2 关键日志阶段
 
 按时间顺序看：
 
@@ -179,7 +203,7 @@ to_authorship_log:                        # to_authorship_log_and_initial_workin
 [git-ai-kiro] AI checkpoint succeeded                          # 阶段 3
 ```
 
-### 卡死阶段诊断
+### 4.3 卡死阶段诊断
 
 | 卡在哪 | 推断 |
 |--------|------|
