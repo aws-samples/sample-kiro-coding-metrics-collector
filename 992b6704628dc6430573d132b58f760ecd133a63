@@ -1,0 +1,34 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "992b6704628dc6430573d132b58f760ecd133a63",
+  "prompts": {
+    "8c7f01972dcfbb18": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "f8ec6d11-88bc-44ee-9a1c-f479ce95c038",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 115,
+      "overriden_lines": 0
+    },
+    "f5b7c3913206a893": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "44b4bdd0-a98f-41b8-a3ce-a017f59f4bca",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
