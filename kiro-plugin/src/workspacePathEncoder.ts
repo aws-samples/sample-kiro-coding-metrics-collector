@@ -27,8 +27,13 @@ export interface WriteAction {
 export interface ParseResult {
   /** Extracted write actions */
   writeActions: WriteAction[];
-  /** Detected log format */
-  format: "A" | "B";
+  /**
+   * Detected log format:
+   * - "A": legacy execution log `actions` array (full original/modified content)
+   * - "B": legacy execution log `context.messages` toolUse entries
+   * - "C": Kiro 1.0 session transcript `messages.jsonl` (tool_call/tool_result)
+   */
+  format: "A" | "B" | "C";
   /** Associated chat session ID */
   chatSessionId?: string;
   /** Execution end timestamp in milliseconds */
