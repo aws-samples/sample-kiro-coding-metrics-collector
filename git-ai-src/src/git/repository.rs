@@ -2456,7 +2456,23 @@ pub fn find_repository(global_args: &[String]) -> Result<Repository, GitAiError>
     rev_parse_args.push("--git-dir".to_string());
     rev_parse_args.push("--git-common-dir".to_string());
 
-    let rev_parse_output = exec_git(&rev_parse_args)?;
+    // NOTE: `find_repository` is also called speculatively (e.g. `if let Ok(repo)
+    // = find_repository(..)` in the push/fetch hooks), so a failure here is a
+    // normal outcome when running outside a repository. Keep the diagnostic
+    // behind GIT_AI_DEBUG to aid field troubleshooting without adding stderr
+    // noise to ordinary git usage.
+    let rev_parse_output = match exec_git(&rev_parse_args) {
+        Ok(output) => output,
+        Err(e) => {
+            if std::env::var("GIT_AI_DEBUG").is_ok() {
+                eprintln!(
+                    "[diagnostic] exec_git rev-parse failed: {:?}  |  args={:?}",
+                    e, &rev_parse_args
+                );
+            }
+            return Err(e);
+        }
+    };
     let rev_parse_stdout = String::from_utf8(rev_parse_output.stdout)?;
     let mut lines = rev_parse_stdout
         .lines()
@@ -3131,6 +3147,30 @@ pub fn group_files_by_repository(
     (repo_files, orphan_files)
 }
 
+/// Sanitise Git environment variables that would otherwise override the `-C`
+/// flag and interfere with repository discovery.
+///
+/// This matters most inside git hooks: git exports `GIT_DIR`, `GIT_INDEX_FILE`
+/// and friends to hook processes, and those take precedence over `-C <path>`.
+/// Without clearing them, a git-ai invocation from a hook can resolve to the
+/// wrong repository (or the wrong index) entirely.
+///
+/// Mirrors `GIT_ENV_VARS_TO_SANITIZE` in `daemon.rs`, which does the same at
+/// daemon startup.
+fn sanitize_git_env(cmd: &mut Command) {
+    cmd.env_remove("GIT_EXTERNAL_DIFF");
+    cmd.env_remove("GIT_DIFF_OPTS");
+    cmd.env_remove("GIT_DIR");
+    cmd.env_remove("GIT_WORK_TREE");
+    cmd.env_remove("GIT_CEILING_DIRECTORIES");
+    cmd.env_remove("GIT_COMMON_DIR");
+    cmd.env_remove("GIT_INDEX_FILE");
+    cmd.env_remove("GIT_OBJECT_DIRECTORY");
+    cmd.env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+    cmd.env_remove("GIT_QUARANTINE_PATH");
+    cmd.env_remove("GIT_NAMESPACE");
+}
+
 /// Helper to execute a git command
 pub fn exec_git(args: &[String]) -> Result<Output, GitAiError> {
     exec_git_with_profile(args, InternalGitProfile::General)
@@ -3152,8 +3192,7 @@ pub fn exec_git_allow_nonzero_with_profile(
         args_with_internal_git_profile(&args_with_disabled_hooks_if_needed(args), profile);
     let mut cmd = Command::new(config::Config::get().git_cmd());
     cmd.args(&effective_args);
-    cmd.env_remove("GIT_EXTERNAL_DIFF");
-    cmd.env_remove("GIT_DIFF_OPTS");
+    sanitize_git_env(&mut cmd);
 
     #[cfg(windows)]
     {
@@ -3206,8 +3245,7 @@ pub fn exec_git_stdin_with_profile(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    cmd.env_remove("GIT_EXTERNAL_DIFF");
-    cmd.env_remove("GIT_DIFF_OPTS");
+    sanitize_git_env(&mut cmd);
 
     #[cfg(windows)]
     {
@@ -3283,8 +3321,7 @@ pub fn exec_git_stdin_with_env_with_profile(
     for (k, v) in env.iter() {
         cmd.env(k, v);
     }
-    cmd.env_remove("GIT_EXTERNAL_DIFF");
-    cmd.env_remove("GIT_DIFF_OPTS");
+    sanitize_git_env(&mut cmd);
 
     #[cfg(windows)]
     {

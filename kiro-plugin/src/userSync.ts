@@ -166,22 +166,28 @@ function getEmailFromKiroCli(): string {
   return "";
 }
 
-/** 向工作区的 git repo 的 .git/ai/last_upload_payload.json 追加一条 userSync 记录 */
+/** 向工作区的所有 git repo（包括嵌套仓库）的 .git/ai/last_upload_payload.json 追加一条 userSync 记录 */
 function writeDebugLog(payload: UserSyncPayload): void {
   try {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return;
-    const { findGitRoot, findGitReposInDir } = require("./gitUtils");
+    const { findGitRoot, findGitReposInDir, resolveGitCommonDir } = require("./gitUtils");
     const wsPath = folders[0].uri.fsPath;
     const repos: string[] = [];
     const gitRoot = findGitRoot(wsPath);
     if (gitRoot) {
       repos.push(gitRoot);
-    } else {
-      repos.push(...findGitReposInDir(wsPath));
+    }
+    // 始终扫描子目录以覆盖嵌套 git 仓库（git 项目内的子 git 项目）。
+    // 此前这段放在 else 分支里，导致 workspace 本身就是仓库时，其内部的
+    // 子仓库会被完全漏掉。
+    for (const r of findGitReposInDir(wsPath) as string[]) {
+      if (!repos.includes(r)) {
+        repos.push(r);
+      }
     }
     for (const repoPath of repos) {
-      const aiDir = path.join(repoPath, ".git", "ai");
+      const aiDir = path.join(resolveGitCommonDir(repoPath), "ai");
       if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir, { recursive: true });
       const logFile = path.join(aiDir, "last_upload_payload.json");
       fs.appendFileSync(logFile, `[userSync] [${new Date().toISOString()}] ${JSON.stringify(payload)}\n`, "utf-8");
@@ -198,19 +204,23 @@ function getLastUserSyncTimestamp(): number | null {
   try {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return null;
-    const { findGitRoot, findGitReposInDir } = require("./gitUtils");
+    const { findGitRoot, findGitReposInDir, resolveGitCommonDir } = require("./gitUtils");
     const wsPath = folders[0].uri.fsPath;
     const repos: string[] = [];
     const gitRoot = findGitRoot(wsPath);
     if (gitRoot) {
       repos.push(gitRoot);
-    } else {
-      repos.push(...findGitReposInDir(wsPath));
+    }
+    // 同 writeDebugLog：始终扫描子目录，覆盖嵌套 git 仓库
+    for (const r of findGitReposInDir(wsPath) as string[]) {
+      if (!repos.includes(r)) {
+        repos.push(r);
+      }
     }
 
     let latest: number | null = null;
     for (const repoPath of repos) {
-      const logFile = path.join(repoPath, ".git", "ai", "last_upload_payload.json");
+      const logFile = path.join(resolveGitCommonDir(repoPath), "ai", "last_upload_payload.json");
       if (!fs.existsSync(logFile)) continue;
       let content = "";
       try { content = fs.readFileSync(logFile, "utf-8"); } catch { continue; }

@@ -9,6 +9,82 @@ import { getGitAiBinary } from "./checkpoint";
 import { STATS_URL } from "./apiConfig";
 
 /**
+ * Sentinel returned by `resolveHooksDir` when the repository has hooks
+ * explicitly disabled via `core.hooksPath=/dev/null` (or `NUL` on Windows).
+ */
+export const HOOKS_DISABLED = "__HOOKS_DISABLED__";
+
+/**
+ * Resolve the real git directory for a repository.
+ *
+ * Uses `git rev-parse --git-common-dir`, which is required for correctness in
+ * two common layouts where `<repo>/.git` is a *file* rather than a directory:
+ *   - submodules (`.git` points into the parent's `modules/` dir)
+ *   - linked worktrees (`.git` points at the main repo's `worktrees/` dir)
+ *
+ * In both cases naively joining `<repo>/.git/hooks` fails. `--git-common-dir`
+ * also resolves to the shared git dir for worktrees, which is where hooks live.
+ *
+ * Falls back to `<repoPath>/.git` when git is unavailable or the command fails.
+ */
+export function resolveGitCommonDir(repoPath: string): string {
+  try {
+    const result = spawnSync("git", ["-C", repoPath, "rev-parse", "--git-common-dir"], {
+      timeout: 5000,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0 && result.stdout) {
+      const raw = result.stdout.trim();
+      if (raw) {
+        return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(repoPath, raw);
+      }
+    }
+  } catch {
+    /* fall through to default below */
+  }
+  return path.join(repoPath, ".git");
+}
+
+/**
+ * Resolve the directory where git looks for hooks in a repository.
+ *
+ * Honours `core.hooksPath` (relative values are resolved against the repo root),
+ * which some organisations set to a shared hooks directory. When it is set to
+ * `/dev/null` or `NUL`, hooks are intentionally disabled and `HOOKS_DISABLED`
+ * is returned so callers can skip installation instead of writing a file that
+ * git will never execute.
+ *
+ * Defaults to `<git-common-dir>/hooks`.
+ */
+export function resolveHooksDir(repoPath: string): string {
+  try {
+    const result = spawnSync("git", ["-C", repoPath, "config", "--get", "core.hooksPath"], {
+      timeout: 5000,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0 && result.stdout) {
+      const raw = result.stdout.trim();
+      if (raw) {
+        if (raw === "/dev/null" || raw.toLowerCase() === "nul") {
+          console.log(`[git-ai-kiro] core.hooksPath=${raw} — hooks disabled for ${repoPath}`);
+          return HOOKS_DISABLED;
+        }
+        const resolved = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(repoPath, raw);
+        console.log(`[git-ai-kiro] core.hooksPath=${raw} → resolved to ${resolved}`);
+        return resolved;
+      }
+    }
+  } catch {
+    /* git config failed — use the default below */
+  }
+  return path.join(resolveGitCommonDir(repoPath), "hooks");
+}
+
+/**
  * Find the git repository root by walking up from the given path.
  * Returns null if no .git directory is found.
  */
@@ -113,7 +189,11 @@ export function installPreCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = path.join(repoPath, ".git", "hooks");
+  const hooksDir = resolveHooksDir(repoPath);
+  if (hooksDir === HOOKS_DISABLED) {
+    console.log(`[git-ai-kiro] Skip pre-commit hook: hooks disabled for ${repoPath}`);
+    return;
+  }
   const hookPath = path.join(hooksDir, "pre-commit");
   const marker = "# >>> git-ai-kiro pre-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro pre-commit hook <<<";
@@ -185,7 +265,11 @@ export function installPostCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = path.join(repoPath, ".git", "hooks");
+  const hooksDir = resolveHooksDir(repoPath);
+  if (hooksDir === HOOKS_DISABLED) {
+    console.log(`[git-ai-kiro] Skip post-commit hook: hooks disabled for ${repoPath}`);
+    return;
+  }
   const marker = "# >>> git-ai-kiro post-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro post-commit hook <<<";
   const isWindows = os.platform() === "win32";
