@@ -93,6 +93,7 @@ export async function uploadCommitStats(
     const idempotencyKey = generateIdempotencyKey(commitSha, machineId);
     await postWithRetry(STATS_URL, idempotencyKey, payload);
     console.log(`[git-ai-kiro] Commit stats uploaded: ${commitSha.slice(0, 8)}`);
+    appendStatsDebugLog(workspaceDir, payload);
   } catch (err) {
     console.error(`[git-ai-kiro] Commit stats upload failed: ${err}`);
   }
@@ -227,6 +228,29 @@ function generateIdempotencyKey(
 ): string {
   const raw = `${commitSha}:${machineId}`;
   return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Append an uploaded-payload record to `<git-common-dir>/ai/last_upload_payload.json`.
+ *
+ * Mirrors the `[stats] [<iso>] {json}` line format the post-commit hook writes, so
+ * that this file remains the single place to confirm an upload happened regardless
+ * of which path (hook or extension) performed it. Best-effort: never throws.
+ */
+function appendStatsDebugLog(workspaceDir: string, payload: UploadPayload): void {
+  try {
+    // require 而非顶层 import：避免 gitUtils ↔ statsUploader 的循环依赖
+    const { resolveGitCommonDir } = require("./gitUtils") as {
+      resolveGitCommonDir: (repoPath: string) => string;
+    };
+    const fs = require("node:fs") as typeof import("node:fs");
+    const aiDir = path.join(resolveGitCommonDir(workspaceDir), "ai");
+    fs.mkdirSync(aiDir, { recursive: true });
+    const line = `[stats] [${payload.reported_at}] ${JSON.stringify(payload)}\n`;
+    fs.appendFileSync(path.join(aiDir, "last_upload_payload.json"), line, "utf-8");
+  } catch {
+    /* best effort — the upload itself already succeeded */
+  }
 }
 
 function gitExec(cwd: string, args: string[]): string {

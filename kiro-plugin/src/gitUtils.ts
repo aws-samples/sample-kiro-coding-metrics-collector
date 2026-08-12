@@ -128,24 +128,100 @@ function readExistingHook(hookPath: string): ExistingHook {
   return { text, unsafe: false };
 }
 
+/** Whether a hooks directory sits inside the repository's own git dir. */
+function isInsideRepo(repoPath: string, hooksDir: string): boolean {
+  const repoHooksRoot = path.resolve(resolveGitCommonDir(repoPath));
+  const resolved = path.resolve(hooksDir);
+  return resolved === repoHooksRoot || resolved.startsWith(repoHooksRoot + path.sep);
+}
+
+/** Result of deciding where a hook should be installed. */
+export interface HookTarget {
+  /** Directory to install into, or HOOKS_DISABLED to skip entirely. */
+  dir: string;
+  /**
+   * Whether git will actually execute a hook placed in `dir`.
+   *
+   * False when `core.hooksPath` points somewhere we cannot safely write (e.g. a
+   * machine-wide directory owned by corporate tooling): we still install into
+   * the repository's own hooks dir so the hook exists and is ready if the
+   * override is removed, but git will not run it while the override is active.
+   */
+  effective: boolean;
+}
+
 /**
- * Warn when the resolved hooks directory lives outside the repository.
+ * Decide where to install a hook, degrading gracefully when `core.hooksPath`
+ * points at a directory we must not touch.
  *
- * This happens when `core.hooksPath` is set (often globally or system-wide by
- * corporate tooling). Writing there is what makes our hook actually run, but the
- * directory is shared by every repository on the machine, so the change is not
- * scoped to this workspace. Surface that clearly.
+ * Rationale: a machine-wide `core.hooksPath` (common with corporate security
+ * tooling) makes git ignore `<repo>/.git/hooks` entirely. Writing into that
+ * shared directory is not acceptable — it is usually root-owned, applies to
+ * every repository on the machine, and its hooks are often compiled binaries we
+ * would corrupt. So when the target is unusable we fall back to the repository's
+ * own hooks dir and report `effective: false`, letting callers arrange another
+ * way to collect data.
+ *
+ * @param hookName  Hook file name, used to check whether an existing entry is
+ *                  a non-text hook we must not rewrite.
  */
-function warnIfSharedHooksDir(repoPath: string, hooksDir: string): void {
-  const inRepo = path.resolve(hooksDir).startsWith(
-    path.resolve(resolveGitCommonDir(repoPath)) + path.sep
-  );
-  if (!inRepo) {
+export function resolveHookTarget(repoPath: string, hookName: string): HookTarget {
+  const effectiveDir = resolveHooksDir(repoPath);
+  if (effectiveDir === HOOKS_DISABLED) {
+    return { dir: HOOKS_DISABLED, effective: false };
+  }
+
+  const repoHooksDir = path.join(resolveGitCommonDir(repoPath), "hooks");
+
+  // Target inside the repo: always fine.
+  if (isInsideRepo(repoPath, effectiveDir)) {
+    return { dir: effectiveDir, effective: true };
+  }
+
+  // Target outside the repo — only use it if we can write there AND we would not
+  // be clobbering a non-text hook.
+  const existing = readExistingHook(path.join(effectiveDir, hookName));
+  let writable = false;
+  try {
+    fs.accessSync(effectiveDir, fs.constants.W_OK);
+    writable = true;
+  } catch {
+    writable = false;
+  }
+
+  if (writable && !existing.unsafe) {
     console.warn(
-      `[git-ai-kiro] core.hooksPath points outside this repository ` +
-        `(${hooksDir}). Hooks installed there apply to every repository on this ` +
-        `machine, not just ${repoPath}.`
+      `[git-ai-kiro] core.hooksPath points outside this repository (${effectiveDir}). ` +
+        `A hook installed there applies to every repository on this machine.`
     );
+    return { dir: effectiveDir, effective: true };
+  }
+
+  const why = !writable ? "not writable" : "contains a non-text hook";
+  console.log(
+    `[git-ai-kiro] core.hooksPath=${effectiveDir} is ${why}; installing ${hookName} into ` +
+      `${repoHooksDir} instead. NOTE: git will not run it while core.hooksPath is set, ` +
+      `so commit stats will be uploaded by the extension instead of the hook.`
+  );
+  return { dir: repoHooksDir, effective: false };
+}
+
+/**
+ * Whether our post-commit hook will actually be executed by git for this repo.
+ *
+ * True only when the hook file in git's *effective* hooks directory carries our
+ * marker. Used to decide whether the extension must upload commit stats itself.
+ */
+export function isPostCommitHookEffective(repoPath: string): boolean {
+  try {
+    const dir = resolveHooksDir(repoPath);
+    if (dir === HOOKS_DISABLED) return false;
+    const hookPath = path.join(dir, "post-commit");
+    const existing = readExistingHook(hookPath);
+    if (existing.unsafe) return false;
+    return existing.text.includes("# >>> git-ai-kiro post-commit hook >>>");
+  } catch {
+    return false;
   }
 }
 
@@ -254,12 +330,12 @@ export function installPreCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = resolveHooksDir(repoPath);
-  if (hooksDir === HOOKS_DISABLED) {
+  const target = resolveHookTarget(repoPath, "pre-commit");
+  if (target.dir === HOOKS_DISABLED) {
     console.log(`[git-ai-kiro] Skip pre-commit hook: hooks disabled for ${repoPath}`);
     return;
   }
-  warnIfSharedHooksDir(repoPath, hooksDir);
+  const hooksDir = target.dir;
   const hookPath = path.join(hooksDir, "pre-commit");
   const marker = "# >>> git-ai-kiro pre-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro pre-commit hook <<<";
@@ -337,12 +413,12 @@ export function installPostCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = resolveHooksDir(repoPath);
-  if (hooksDir === HOOKS_DISABLED) {
+  const target = resolveHookTarget(repoPath, "post-commit");
+  if (target.dir === HOOKS_DISABLED) {
     console.log(`[git-ai-kiro] Skip post-commit hook: hooks disabled for ${repoPath}`);
     return;
   }
-  warnIfSharedHooksDir(repoPath, hooksDir);
+  const hooksDir = target.dir;
   const marker = "# >>> git-ai-kiro post-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro post-commit hook <<<";
   const isWindows = os.platform() === "win32";
@@ -634,7 +710,11 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   USER_NAME=$(git config user.name 2>/dev/null)
   USER_EMAIL=$(git config user.email 2>/dev/null)
-  MACHINE_ID=$(hostname | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "unknown")
+  # printf '%s' 而非 echo/hostname 直接管道：必须不带尾随换行，才能与插件侧
+  # statsUploader 的 sha256(os.hostname()) 得到同一个 machine_id。否则同一台机器
+  # 经 hook 与经插件上报会算出两个不同的 machine_id（看板会当成两台设备），
+  # 且两条路径的幂等键也不一致，无法互相去重。
+  MACHINE_ID=$(printf '%s' "$(hostname)" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "unknown")
   REPORTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
   REMOTE_URL=$(git config remote.origin.url 2>/dev/null)
   IDEM_KEY=$(echo -n "$COMMIT_SHA:$MACHINE_ID" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "$COMMIT_SHA")

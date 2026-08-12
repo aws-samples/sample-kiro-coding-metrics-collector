@@ -2,7 +2,7 @@
   "name": "git-ai-kiro",
   "displayName": "git-ai for Kiro",
   "description": "Track AI-generated code in Kiro IDE with git-ai attribution.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "git-ai",
   "icon": "git-ai.png",
   "repository": {
@@ -76,7 +76,7 @@
     "watch": "tsc -watch -p ./",
     "test": "vitest --run",
     "lint": "eslint src",
-    "build:binary": "cargo build --release --manifest-path ../../Cargo.toml && node scripts/copy-binary.js",
+    "build:binary": "cargo build --release --manifest-path ../git-ai-src/Cargo.toml && node scripts/copy-binary.js",
     "copy:support-sources": "sh scripts/copy-support-sources.sh",
     "copy:support-sources:win": "powershell -ExecutionPolicy Bypass -File scripts\\copy-support-sources.ps1",
     "package:local": "npm run build:binary && npm run compile && npm run copy:support-sources && npx vsce package",

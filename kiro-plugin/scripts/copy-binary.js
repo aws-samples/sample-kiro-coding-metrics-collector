@@ -13,8 +13,9 @@ const os = require("node:os");
 const isWindows = os.platform() === "win32";
 const binaryName = isWindows ? "git-ai.exe" : "git-ai";
 
-const repoRoot = path.resolve(__dirname, "..", "..", "..");
-const src = path.join(repoRoot, "target", "release", binaryName);
+// Rust crate 位于仓库内的 git-ai-src/，其 Cargo 输出在 git-ai-src/target/。
+const rustRoot = path.resolve(__dirname, "..", "..", "git-ai-src");
+const src = path.join(rustRoot, "target", "release", binaryName);
 const destDir = path.join(__dirname, "..", "bin");
 const dest = path.join(destDir, binaryName);
 

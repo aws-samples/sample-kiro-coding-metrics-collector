@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { execFileSync, spawn } from "node:child_process";
 import { getGitAiBinary } from "./checkpoint";
 import { reportUserLogin } from "./userSync";
+import { isPostCommitHookEffective } from "./gitUtils";
+import { uploadCommitStats } from "./statsUploader";
 
 /** Timeout in ms for the post-commit child process. */
 const POST_COMMIT_TIMEOUT_MS = 30_000;
@@ -128,8 +130,25 @@ export class CommitWatcher implements vscode.Disposable {
         }
         try {
           // 每次 commit 时也上报用户登录信息（更新 IP、活跃时间）
-          // Stats 上传由 post-commit hook 负责，避免重复上报
           await reportUserLogin();
+        } catch (err) {
+          console.error(`[git-ai-kiro] Failed to report user login: ${err}`);
+        }
+
+        // Stats 上传通常由 post-commit hook 负责。但当 core.hooksPath 被全局/系统级
+        // 覆盖到我们无法写入的目录时（常见于企业安全工具），git 根本不会执行仓库内的
+        // hook —— 此时若不在这里补上传，该仓库的提交统计会全部丢失。
+        //
+        // 仅在「我们的 hook 不会被执行」时才上传，避免与 hook 重复上报：两条路径的
+        // 幂等键虽已对齐，但重复请求没有必要。
+        try {
+          if (!isPostCommitHookEffective(repoPath)) {
+            console.log(
+              `[git-ai-kiro] post-commit hook is not effective for ${repoPath} ` +
+                `(core.hooksPath override); uploading stats from the extension instead.`
+            );
+            await uploadCommitStats(repoPath, currentHead);
+          }
         } catch (err) {
           console.error(`[git-ai-kiro] Failed to upload commit stats: ${err}`);
         }
