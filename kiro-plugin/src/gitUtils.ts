@@ -85,6 +85,71 @@ export function resolveHooksDir(repoPath: string): string {
 }
 
 /**
+ * Result of inspecting an existing hook file before we modify it.
+ *   - `text`: the file's contents (empty string when the file doesn't exist)
+ *   - `unsafe`: true when the file exists but is NOT UTF-8 text, meaning we must
+ *     not rewrite it
+ */
+interface ExistingHook {
+  text: string;
+  unsafe: boolean;
+}
+
+/**
+ * Read an existing hook file as text, refusing to touch non-text hooks.
+ *
+ * Our install strategy is "read as utf-8 → append a marker-delimited section →
+ * write back". That is only safe for text hooks. Some environments install
+ * *compiled binary* hooks (corporate security tooling commonly does this, via a
+ * machine-wide `core.hooksPath`). Decoding such a file as utf-8 is lossy —
+ * invalid byte sequences become U+FFFD — so writing it back would corrupt the
+ * existing hook.
+ *
+ * Returns `unsafe: true` when the file exists and does not round-trip as utf-8,
+ * so callers can skip installation rather than destroy someone else's hook.
+ */
+function readExistingHook(hookPath: string): ExistingHook {
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(hookPath);
+  } catch {
+    return { text: "", unsafe: false }; // does not exist yet
+  }
+
+  // A NUL byte is a reliable indicator of binary content; additionally require
+  // that the bytes round-trip through utf-8 without replacement characters.
+  if (raw.includes(0)) {
+    return { text: "", unsafe: true };
+  }
+  const text = raw.toString("utf-8");
+  if (Buffer.compare(Buffer.from(text, "utf-8"), raw) !== 0) {
+    return { text: "", unsafe: true };
+  }
+  return { text, unsafe: false };
+}
+
+/**
+ * Warn when the resolved hooks directory lives outside the repository.
+ *
+ * This happens when `core.hooksPath` is set (often globally or system-wide by
+ * corporate tooling). Writing there is what makes our hook actually run, but the
+ * directory is shared by every repository on the machine, so the change is not
+ * scoped to this workspace. Surface that clearly.
+ */
+function warnIfSharedHooksDir(repoPath: string, hooksDir: string): void {
+  const inRepo = path.resolve(hooksDir).startsWith(
+    path.resolve(resolveGitCommonDir(repoPath)) + path.sep
+  );
+  if (!inRepo) {
+    console.warn(
+      `[git-ai-kiro] core.hooksPath points outside this repository ` +
+        `(${hooksDir}). Hooks installed there apply to every repository on this ` +
+        `machine, not just ${repoPath}.`
+    );
+  }
+}
+
+/**
  * Find the git repository root by walking up from the given path.
  * Returns null if no .git directory is found.
  */
@@ -194,6 +259,7 @@ export function installPreCommitHook(repoPath: string): void {
     console.log(`[git-ai-kiro] Skip pre-commit hook: hooks disabled for ${repoPath}`);
     return;
   }
+  warnIfSharedHooksDir(repoPath, hooksDir);
   const hookPath = path.join(hooksDir, "pre-commit");
   const marker = "# >>> git-ai-kiro pre-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro pre-commit hook <<<";
@@ -207,9 +273,17 @@ export function installPreCommitHook(repoPath: string): void {
   }
 
   // Check if hook already has our section — remove old version to update
-  let existingContent = "";
-  try {
-    existingContent = fs.readFileSync(hookPath, "utf-8");
+  const existing = readExistingHook(hookPath);
+  if (existing.unsafe) {
+    console.error(
+      `[git-ai-kiro] Refusing to modify non-text hook at ${hookPath} ` +
+        `(likely a compiled hook installed by other tooling). Skipping install ` +
+        `to avoid corrupting it.`
+    );
+    return;
+  }
+  let existingContent = existing.text;
+  {
     if (existingContent.includes(marker)) {
       const startIdx = existingContent.indexOf(marker);
       const endIdx = existingContent.indexOf(endMarker);
@@ -218,8 +292,6 @@ export function installPreCommitHook(repoPath: string): void {
         existingContent = existingContent.replace(/\n{3,}/g, "\n\n").trim();
       }
     }
-  } catch {
-    // File doesn't exist yet
   }
 
   const binaryEscaped = binary.replace(/\\/g, "/");
@@ -270,6 +342,7 @@ export function installPostCommitHook(repoPath: string): void {
     console.log(`[git-ai-kiro] Skip post-commit hook: hooks disabled for ${repoPath}`);
     return;
   }
+  warnIfSharedHooksDir(repoPath, hooksDir);
   const marker = "# >>> git-ai-kiro post-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro post-commit hook <<<";
   const isWindows = os.platform() === "win32";
@@ -284,9 +357,17 @@ export function installPostCommitHook(repoPath: string): void {
   }
 
   // Check if hook already has our section — remove old version to update
-  let existingContent = "";
-  try {
-    existingContent = fs.readFileSync(hookPath, "utf-8");
+  const existing = readExistingHook(hookPath);
+  if (existing.unsafe) {
+    console.error(
+      `[git-ai-kiro] Refusing to modify non-text hook at ${hookPath} ` +
+        `(likely a compiled hook installed by other tooling). Skipping install ` +
+        `to avoid corrupting it.`
+    );
+    return;
+  }
+  let existingContent = existing.text;
+  {
     if (existingContent.includes(marker)) {
       const startIdx = existingContent.indexOf(marker);
       const endIdx = existingContent.indexOf(endMarker);
@@ -295,8 +376,6 @@ export function installPostCommitHook(repoPath: string): void {
         existingContent = existingContent.replace(/\n{3,}/g, "\n\n").trim();
       }
     }
-  } catch {
-    // File doesn't exist yet
   }
 
   // Choose hook strategy:

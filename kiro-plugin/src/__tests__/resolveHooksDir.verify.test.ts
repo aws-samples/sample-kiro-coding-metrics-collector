@@ -13,7 +13,12 @@ import * as os from "node:os";
 
 vi.mock("vscode", () => ({}));
 
-import { resolveGitCommonDir, resolveHooksDir, HOOKS_DISABLED } from "../gitUtils";
+import {
+  resolveGitCommonDir,
+  resolveHooksDir,
+  installPostCommitHook,
+  HOOKS_DISABLED,
+} from "../gitUtils";
 
 const sh = (cmd: string, cwd: string) =>
   execSync(cmd, { cwd, stdio: "pipe", encoding: "utf-8" });
@@ -124,5 +129,49 @@ describe("resolveGitCommonDir / resolveHooksDir", () => {
     const notRepo = path.join(base, "notrepo");
     fs.mkdirSync(notRepo, { recursive: true });
     expect(resolveGitCommonDir(notRepo)).toBe(path.join(notRepo, ".git"));
+  });
+});
+
+describe("安装 hook 时不得破坏已有的非文本 hook", () => {
+  it("现存 post-commit 是二进制时跳过安装且不修改该文件", () => {
+    const repo = path.join(base, "binhook");
+    fs.mkdirSync(repo, { recursive: true });
+    sh("git init -q", repo);
+
+    // 模拟企业安全工具装的编译型 hook（含 NUL 字节，非 UTF-8 文本）
+    const hooksDir = path.join(repo, ".git", "hooks");
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, "post-commit");
+    const binary = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01, 0xff, 0xfe, 0x00]);
+    fs.writeFileSync(hookPath, binary);
+    const before = fs.readFileSync(hookPath);
+
+    installPostCommitHook(repo);
+
+    const after = fs.readFileSync(hookPath);
+    // 关键断言：文件逐字节未变。若按 utf-8 读取再写回，0xff/0xfe 会被替换为
+    // U+FFFD，文件必然被破坏。
+    expect(Buffer.compare(before, after)).toBe(0);
+  });
+
+  it("现存 post-commit 是普通文本时正常追加我们的段落", () => {
+    const repo = path.join(base, "texthook");
+    fs.mkdirSync(repo, { recursive: true });
+    sh("git init -q", repo);
+
+    const hooksDir = path.join(repo, ".git", "hooks");
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, "post-commit");
+    fs.writeFileSync(hookPath, "#!/bin/sh\necho existing-hook\n", "utf-8");
+
+    installPostCommitHook(repo);
+
+    const after = fs.readFileSync(hookPath, "utf-8");
+    // 原有内容保留
+    expect(after).toContain("echo existing-hook");
+    // 我们的段落被追加（仅在 binary 可用时；不可用则只校验未破坏原内容）
+    if (after.includes("git-ai-kiro post-commit hook")) {
+      expect(after).toContain("# <<< git-ai-kiro post-commit hook <<<");
+    }
   });
 });
