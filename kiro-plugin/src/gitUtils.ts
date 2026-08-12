@@ -459,14 +459,47 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   COMMIT_SHA=$(git rev-parse HEAD 2>/dev/null)
   if [ -z "$COMMIT_SHA" ]; then exit 0; fi
   REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+
+  # --- 解析共享 git 目录（worktree / submodule 安全） ---
+  # 普通仓库为 $REPO_ROOT/.git；worktree 与 submodule 下 .git 是文件，
+  # 真实 git 目录需由 --git-common-dir 得到，否则锁文件与 working_logs
+  # 路径都会落到不存在的位置。
+  GIT_COMMON_DIR_RAW=$(git rev-parse --git-common-dir 2>/dev/null)
+  GIT_COMMON_DIR=""
+  if [ -n "$GIT_COMMON_DIR_RAW" ]; then
+    case "$GIT_COMMON_DIR_RAW" in
+      /*|[A-Za-z]:[/\\\\]*) GIT_COMMON_DIR="$GIT_COMMON_DIR_RAW" ;;
+      *) GIT_COMMON_DIR=$(cd "$REPO_ROOT" 2>/dev/null && cd "$GIT_COMMON_DIR_RAW" 2>/dev/null && pwd) ;;
+    esac
+  fi
+  [ -z "$GIT_COMMON_DIR" ] && GIT_COMMON_DIR="$REPO_ROOT/.git"
+
+  # --- flock 互斥：防止短时间内连续 commit 导致两个 hook 并发写 ---
+  # 并发写 refs/notes/ai 与 working_logs 会互相覆盖，造成工作日志丢失
+  # （典型触发场景：快速合并 / 拉取产生的连续提交）。
+  # flock 在部分 Git Bash 环境中不存在，缺失时退化为不加锁，保持原行为。
+  POST_COMMIT_LOCK="$GIT_COMMON_DIR/ai/post-commit.lock"
+  mkdir -p "$GIT_COMMON_DIR/ai" 2>/dev/null
+  if command -v flock >/dev/null 2>&1; then
+    exec 200>"$POST_COMMIT_LOCK" 2>/dev/null
+    if ! flock -n 200; then
+      exit 0
+    fi
+  fi
+
   sleep 2
+
+  # --- 检测 cherry-pick：同一份改动会被重复计入，直接退出不上报 ---
+  REFLOG_MSG=$(git reflog -1 --format=%gs HEAD 2>/dev/null || echo "")
+  case "$REFLOG_MSG" in
+    *"cherry-pick"*) exit 0 ;;
+  esac
 
   # --- 检测 amend：如果是 git commit --amend，使用 --amend-from 标志调用 git-ai ---
   # 判定依据：HEAD reflog 最新一条是 "commit (amend)"
   # git-ai 的 amend 处理会正确地从 working_logs/<OLD_SHA>/ 读取 AI checkpoints，
   # 并结合 amend 后的新 parent 生成正确的 authorship note。
   IS_AMEND=0
-  REFLOG_MSG=$(git reflog -1 --format=%gs HEAD 2>/dev/null || echo "")
   case "$REFLOG_MSG" in
     *"commit (amend)"*) IS_AMEND=1 ;;
   esac
@@ -481,7 +514,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
       git notes --ref=ai remove "$COMMIT_SHA" 2>/dev/null || true
       # 清理 SessionLogWatcher 可能在 working_logs/<COMMIT_SHA>/ 下残留的 INITIAL 文件，
       # 避免干扰 amend 处理（amend 处理使用的是 working_logs/<OLD_SHA>/）。
-      rm -f "$REPO_ROOT/.git/ai/working_logs/$COMMIT_SHA/INITIAL" 2>/dev/null || true
+      rm -f "$GIT_COMMON_DIR/ai/working_logs/$COMMIT_SHA/INITIAL" 2>/dev/null || true
       AMEND_ARGS=" --amend-from $OLD_SHA"
     fi
   fi
@@ -539,7 +572,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
 
   # 优先使用插件端计算的 AI 删除行数（精确值）
   # kiro_net_deletions 记录的是 AI 实际删除的行数（通过行级 diff 计算）
-  KIRO_NET_DEL_FILE="$REPO_ROOT/.git/ai/kiro_net_deletions"
+  KIRO_NET_DEL_FILE="$GIT_COMMON_DIR/ai/kiro_net_deletions"
   KIRO_NET_DEL=0
   if [ -f "$KIRO_NET_DEL_FILE" ]; then
     KIRO_NET_DEL=$(cat "$KIRO_NET_DEL_FILE" 2>/dev/null | tr -d '[:space:]')
@@ -596,7 +629,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   fi
 
   # 上报后清空 kiro_net_deletions
-  rm -f "$REPO_ROOT/.git/ai/kiro_net_deletions" 2>/dev/null
+  rm -f "$GIT_COMMON_DIR/ai/kiro_net_deletions" 2>/dev/null
   REPO_NAME=$(basename "$REPO_ROOT")
   BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   USER_NAME=$(git config user.name 2>/dev/null)
@@ -607,10 +640,10 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   IDEM_KEY=$(echo -n "$COMMIT_SHA:$MACHINE_ID" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "$COMMIT_SHA")
   # 从 last_upload_payload.json 中从后往前查找最近的 [userSync] 记录，提取 user_id
   USER_ID=""
-  if [ -f "$REPO_ROOT/.git/ai/last_upload_payload.json" ]; then
-    USER_ID=$(tac "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
+  if [ -f "$GIT_COMMON_DIR/ai/last_upload_payload.json" ]; then
+    USER_ID=$(tac "$GIT_COMMON_DIR/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
     if [ -z "$USER_ID" ]; then
-      USER_ID=$(tail -r "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
+      USER_ID=$(tail -r "$GIT_COMMON_DIR/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
     fi
   fi
   USER_ID_JSON=""
@@ -621,7 +654,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   # 构建 PAYLOAD：通过临时文件分段写入，避免 commit_msg 的多字节字符
   # 在 shell 变量赋值时被错误转码（Windows GBK -> UTF-8 转换问题）。
   # 关键：commit_msg 直接 git log → 文件 → cat 进 payload 文件，不经过 shell 变量。
-  AI_DIR="$REPO_ROOT/.git/ai"
+  AI_DIR="$GIT_COMMON_DIR/ai"
   mkdir -p "$AI_DIR" 2>/dev/null
   COMMIT_MSG_FILE="$AI_DIR/.commit_msg.tmp"
   PAYLOAD_FILE="$AI_DIR/.payload.tmp"
@@ -636,7 +669,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   cat "$PAYLOAD_FILE" >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
   printf '\\n' >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
   # 清理 15 天前的行（纯 shell 实现）
-  LOG_FILE="$REPO_ROOT/.git/ai/last_upload_payload.json"
+  LOG_FILE="$GIT_COMMON_DIR/ai/last_upload_payload.json"
   if [ -f "$LOG_FILE" ]; then
     CUTOFF_DATE=$(date -u -v-15d +"%Y-%m-%d" 2>/dev/null || date -u -d "15 days ago" +"%Y-%m-%d" 2>/dev/null || echo "")
     if [ -n "$CUTOFF_DATE" ]; then
