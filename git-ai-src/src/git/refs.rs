@@ -469,7 +469,24 @@ pub fn commits_with_authorship_notes(
 // Show an authorship note and return its JSON content if found, or None if it doesn't exist.
 pub fn get_authorship(repo: &Repository, commit_sha: &str) -> Option<AuthorshipLog> {
     let content = show_authorship_note(repo, commit_sha)?;
-    let mut authorship_log = AuthorshipLog::deserialize_from_string(&content).ok()?;
+    let mut authorship_log = match AuthorshipLog::deserialize_from_string(&content) {
+        Ok(log) => log,
+        Err(e) => {
+            // 这里绝不能静默返回 None：note 存在却解析失败时，调用方会认为该提交
+            // 没有任何 AI 归因，于是把 AI 写的行全部计入 human_additions —— 指标
+            // 错得很彻底，却没有任何迹象。典型诱因是本机另装了更新版 git-ai，它
+            // 写出的 note 含本版本无法识别的结构（例如省略了某个本版本视为必填的
+            // 字段）。务必留下可诊断的告警。
+            eprintln!(
+                "[git-ai] warning: authorship note for {} exists but could not be parsed: {}. \
+                 AI attribution for this commit will be missing (its lines will count as human). \
+                 This usually means the note was written by a newer git-ai than this build.",
+                &commit_sha[..commit_sha.len().min(8)],
+                e
+            );
+            return None;
+        }
+    };
     // Keep metadata aligned with the commit where this note is attached.
     authorship_log.metadata.base_commit_sha = commit_sha.to_string();
     Some(authorship_log)

@@ -191,7 +191,14 @@ impl fmt::Display for LineRange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptRecord {
     pub agent_id: AgentId,
+    #[serde(default)]
     pub human_author: Option<String>,
+    /// 会话消息。必须带 `serde(default)`：较新版本的 git-ai 写出的 authorship note
+    /// 会省略该字段（transcript 或存到 CAS 由 `messages_url` 指向，或干脆不落在
+    /// note 里）。若这里是必填字段，缺失会让整个 AuthorshipMetadata 反序列化失败，
+    /// 于是 prompts 变成空 map —— 归因数据被整份丢弃，AI 写的行会全部退化成
+    /// human_additions。缺少 transcript 不该成为丢弃归因的理由。
+    #[serde(default)]
     pub messages: Vec<Message>,
     #[serde(default)]
     pub total_additions: u32,

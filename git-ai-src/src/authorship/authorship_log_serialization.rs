@@ -640,6 +640,80 @@ mod tests {
     use super::*;
     use insta::assert_debug_snapshot;
 
+    /// 回归样本：由较新版本 git-ai（1.6.22）实际写出的 authorship note。
+    /// 其 prompt 记录里既没有 `messages` 也没有 `messages_url`。
+    ///
+    /// 曾经的缺陷：PromptRecord.messages 是必填字段，导致这份 note 反序列化直接
+    /// 失败，prompts 变成空 map，该提交的 AI 归因被整份丢弃 —— AI 写的 3 行全部
+    /// 被计成 human_additions。
+    const NOTE_FROM_NEWER_GIT_AI: &str = r#"aidlc-docs-zhanghao/a.txt
+  80eb1a444fc87c0c 16-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9aeb4746aa29c72f9ba003981bd110c81a1cdd08",
+  "prompts": {
+    "80eb1a444fc87c0c": {
+      "agent_id": {
+        "tool": "kiro",
+        "id": "sess_95b884a7-66af-404b-81e3-ec3247ba0f9b",
+        "model": "kiro-ai"
+      },
+      "human_author": "haozhas <haozhas@amazon.com>",
+      "total_additions": 3,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}"#;
+
+    #[test]
+    fn test_parses_note_without_messages_field() {
+        let log = AuthorshipLog::deserialize_from_string(NOTE_FROM_NEWER_GIT_AI)
+            .expect("缺少 messages 字段的 note 必须仍能解析，否则归因会被整份丢弃");
+
+        // 归因必须完整保留
+        assert_eq!(log.metadata.prompts.len(), 1, "prompts 不能为空");
+        let prompt = log
+            .metadata
+            .prompts
+            .get("80eb1a444fc87c0c")
+            .expect("prompt 记录应存在");
+        assert_eq!(prompt.total_additions, 3);
+        assert_eq!(prompt.accepted_lines, 3);
+        assert_eq!(prompt.agent_id.tool, "kiro");
+        assert!(prompt.messages.is_empty(), "messages 缺失时应回退为空列表");
+
+        // 行归属区间必须解析出来，否则 stats 无法把这些行算给 AI
+        assert_eq!(log.attestations.len(), 1);
+        let att = &log.attestations[0];
+        assert_eq!(att.file_path, "aidlc-docs-zhanghao/a.txt");
+        assert_eq!(att.entries.len(), 1);
+        assert_eq!(att.entries[0].hash, "80eb1a444fc87c0c");
+        assert_eq!(
+            att.entries[0].line_ranges,
+            vec![LineRange::Range(16, 18)],
+            "应解析出 16-18 行归属于该 prompt"
+        );
+    }
+
+    #[test]
+    fn test_parses_note_with_messages_field() {
+        // 反向确认：带 messages 的格式仍然正常解析，修复没有破坏原有行为
+        let with_messages = NOTE_FROM_NEWER_GIT_AI.replace(
+            r#""human_author": "haozhas <haozhas@amazon.com>","#,
+            r#""human_author": "haozhas <haozhas@amazon.com>",
+      "messages": [{"type": "user", "text": "add 3 lines"}],"#,
+        );
+        let log = AuthorshipLog::deserialize_from_string(&with_messages)
+            .expect("带 messages 的 note 应照常解析");
+        let prompt = log.metadata.prompts.get("80eb1a444fc87c0c").unwrap();
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.total_additions, 3);
+    }
+
     #[test]
     fn test_format_line_ranges() {
         let ranges = vec![
