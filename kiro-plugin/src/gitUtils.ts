@@ -605,7 +605,15 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   }
 
   # --- 计算精确的 ai_deletions / human_deletions ---
-  DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json 2>/dev/null || echo "")
+  # --all-prompts 是必须的：不加时 diff --json 的 prompts 只包含"由新增行归因推导出"
+  # 的 prompt。纯删除提交没有任何新增行归因，prompts 会是空的，于是下面两条策略
+  # 都取不到 AI 删除量，AI 删的行会被全部计入 human_deletions。
+  # 加上它会把 authorship note 里的 prompt（含 total_deletions）一并合并进来。
+  DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json --all-prompts 2>/dev/null || echo "")
+  # 兼容旧版二进制：不识别 --all-prompts 时回退（否则会整段拿不到 diff）
+  if [ -z "$DIFF_JSON" ]; then
+    DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json 2>/dev/null || echo "")
+  fi
   GIT_DEL=$(json_get_num "$STATS" "git_diff_deleted_lines")
   GIT_DEL=\${GIT_DEL:-0}
   AI_DEL=0
@@ -1059,7 +1067,10 @@ function buildHookSectionWindows(
     '$stats = & "' + binaryWin + '" stats $commitSha --json' + ignoreArgsPs + " 2>$null",
     "if (-not $stats) { exit 0 }",
     "if ($stats -is [array]) { $stats = $stats -join '' }",
-    '$diffJson = & "' + binaryWin + '" diff $commitSha --json 2>$null',
+    // --all-prompts 同 sh 版：纯删除提交没有新增行归因，不加它 prompts 会为空，
+    // AI 删除量取不到，会被全部计入 human_deletions。
+    '$diffJson = & "' + binaryWin + '" diff $commitSha --json --all-prompts 2>$null',
+    "if (-not $diffJson) { $diffJson = & \"" + binaryWin + "\" diff $commitSha --json 2>$null }",
     "if ($diffJson -is [array]) { $diffJson = $diffJson -join '' }",
     "$statsObj = $stats | ConvertFrom-Json",
     "$gitDel = if ($statsObj.git_diff_deleted_lines) { [int]$statsObj.git_diff_deleted_lines } else { 0 }",
