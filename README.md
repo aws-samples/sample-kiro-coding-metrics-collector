@@ -128,16 +128,16 @@ cp target/x86_64-pc-windows-gnu/release/git-ai.exe ../kiro-plugin/bin/git-ai.exe
 cp target/x86_64-unknown-linux-gnu/release/git-ai ../kiro-plugin/bin/git-ai-linux
 cd ../kiro-plugin
 
-# 3. Copy core source files into support-sources/ for customer-support skill
-sh scripts/copy-support-sources.sh                      # macOS / Linux
-# Windows PowerShell 用：
-# powershell -ExecutionPolicy Bypass -File scripts\copy-support-sources.ps1
-
-# 4. Package VSIX (update version in package.json first)
-npx vsce package --allow-missing-repository --out git-ai-kiro-0.2.2.vsix
+# 3. Package VSIX (update version in package.json first)
+npx vsce package
 ```
 
-> 一键打包：macOS/Linux 用 `npm run package:local`，Windows 用 `npm run package:local:win`（自动调用对应平台的 `copy-support-sources` 脚本）。
+> 一键打包（全平台同一条命令）：`npm run package:local`
+>
+> `support-sources/` 由 `vscode:prepublish` 钩子自动生成，无需手工执行 —— 任何
+> `vsce package`（含 `--target` 变体）都会先跑 `npm run compile` 和
+> `npm run copy:support-sources`。该目录是 `kiro-plugin/src` 与 `git-ai-src/src`
+> 的副本，属生成产物并已被 `.gitignore` 忽略；**改代码请改这两处正本**。
 
 The plugin VSIX includes:
 - `bin/` — git-ai binaries (macOS / Windows / Linux) + curl.exe for Windows fallback
