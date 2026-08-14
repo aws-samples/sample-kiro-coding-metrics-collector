@@ -763,8 +763,15 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
     if [ -n "$CUTOFF_DATE" ]; then
       awk -v cutoff="$CUTOFF_DATE" '
         {
-          match($0, /\\[([0-9]{4}-[0-9]{2}-[0-9]{2})T/, arr)
-          if (arr[1] == "" || arr[1] >= cutoff) print
+          # 只用 POSIX awk 特性：两参数 match() + RSTART，不用 GNU awk 专有的
+          # 三参数 match($0, re, arr)，否则 macOS/BSD awk 会语法报错导致清理静默失效。
+          # 同理不用 {n} 区间量词（旧版 BSD awk 不支持），改为显式重复字符类。
+          if (match($0, /\\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/) == 0) {
+            # 没有时间戳的行（如手工追加内容）一律保留
+            print
+          } else if (substr($0, RSTART + 1, 10) >= cutoff) {
+            print
+          }
         }
       ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
     fi
