@@ -142,7 +142,5 @@ coverage/
 # 不忽略它会让仓库里出现第二份 kiro-plugin/src/*.ts，编辑器里两个同名文件
 # 难以区分正本，也容易误改到副本。
 kiro-plugin/support-sources/
-# 打好的 VSIX 包
-*.vsix
 # 注意：kiro-plugin/bin/ 下的二进制是有意提交的（使用者无需装 Rust 即可打包），
 # 因此不在此忽略。用 npm run build:binary 更新后需一并提交。
