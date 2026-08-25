@@ -40,7 +40,9 @@ metadata:
 
 ```
 [阶段 0]  Kiro IDE AI 编辑
-            ↓ 写入 execution log
+            ↓ 落盘位置随 Kiro 版本分叉：
+            ↓   旧版  → execution log（globalStorage/…/<execution-id>，Format A/B）
+            ↓   1.0+ → ~/.kiro/sessions/<hash>/sess_*/messages.jsonl（Format C）
 [阶段 1]  SessionLogWatcher 监听 + 解析
             ↓ groupActionsByRepo
 [阶段 2]  按 repo 分组 + 路径转换
@@ -53,6 +55,14 @@ metadata:
             ↓ POST /api/v1/stats
 [阶段 6]  Dashboard 入库 + 展示
 ```
+
+⚠️ **阶段 0-1 有两套数据源，先确认客户是哪一套**，否则会去错误的位置找证据（旧版路径下什么都没有，看起来像"插件完全没工作"）。判断方法：
+
+```bash
+ls ~/.kiro/sessions 2>/dev/null && echo "存在 → 可能是 Kiro 1.0（Format C）"
+```
+
+DevTools Console 里 `format=A/B` 与 `format=C` 也能直接区分。两套源的差异见 `references/investigation-playbook.md` 阶段 0。
 
 **追踪技术**：
 

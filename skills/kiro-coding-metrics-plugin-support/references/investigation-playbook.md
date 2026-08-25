@@ -10,8 +10,9 @@
 
 ```
 [阶段 0]  Kiro IDE AI 编辑文件
-            ↓ 写入 execution log（globalStorage/.../<execution-id>）
-[阶段 1]  SessionLogWatcher 监听 + 解析（Format A / Format B）
+            ↓ 旧版 Kiro：写 execution log（globalStorage/.../<execution-id>）
+            ↓ Kiro 1.0：写 ~/.kiro/sessions/<workspace-hash>/sess_<uuid>/messages.jsonl
+[阶段 1]  SessionLogWatcher 监听 + 解析（Format A / B = 旧版，Format C = Kiro 1.0）
             ↓ WriteAction[]
 [阶段 2]  groupActionsByRepo（路径归一化、按 repo 分组）
             ↓ 每 repo 一组 actions
@@ -35,9 +36,12 @@
 
 | 症状 | 优先排查阶段 | 关键证据 |
 |------|------------|---------|
-| `ai_additions=0`（应有 AI 编辑） | 阶段 1→3→4→5b | execution log 是否有对应 actions / working_logs/<sha>/INITIAL / git note prompts |
+| `ai_additions=0`（应有 AI 编辑） | 阶段 1→3→4→5b | 会话日志是否有对应 actions（**先确认 Format A/B 还是 C**）/ working_logs/<sha>/INITIAL / git note prompts |
+| **AI 写的行全被算成 human，但 git note 看起来完全正常** | 阶段 5b **读取侧** | git-ai stderr 是否有 `authorship note for X exists but could not be parsed`——见下方「note 解析失败」专条 |
 | `human_additions` 偏多（应全是 AI） | 阶段 4→5b | working_logs/<sha>/INITIAL 中 line ranges / git note 中 accepted_lines |
+| **人工先写、AI 后改同一文件，人工的行被算进 AI** | 阶段 3 | Format C 下是否发了人工基线 checkpoint——见下方「Format C 缺人工基线」专条 |
 | `ai_deletions` 不对 | 阶段 1→5c | `.git/ai/kiro_net_deletions` / `git-ai diff <sha> --json` 输出 |
+| `mixed_additions` 恒为 0 | — | **已知缺陷，不要排查**。归因逻辑本身不产出该值，非环境问题 |
 | amend commit 后归属丢失 | 阶段 5b | `git reflog`、`HEAD@{1}` vs `ORIG_HEAD`、hook 中 `--amend-from` 参数 |
 | 跨 commit AI 行未传递 | 阶段 4 | working_logs/<parent>/INITIAL 是否有上次未提交的 AI 行 |
 | commit_msg 乱码或缺失 | 阶段 5c | hook 中 commit_msg 处理片段、payload 文件字节 |
@@ -49,7 +53,12 @@
 |------|------------|---------|
 | DevTools Console 完全没 [git-ai-kiro] 日志 | 阶段 0 之前 | 插件是否激活（package.json activationEvents） |
 | 有日志但停在某阶段 | 看停在哪 | 阶段 1：parse 失败；阶段 2：Skipping/Orphan；阶段 3：spawn 失败 |
-| Skipping (sessionId mismatch) | 阶段 1 | sessions.json / chatSessionId |
+| Skipping (sessionId mismatch) | 阶段 1 | sessions.json / chatSessionId（仅 Format A/B） |
+| **升级 Kiro 后突然完全采不到 AI 数据** | 阶段 0-1 | 客户已升到 Kiro 1.0 但插件版本过旧、不支持 Format C。`ls ~/.kiro/sessions` 有内容而 Console 无 `format=C` 即可确认 |
+| **Kiro 1.0：Console 没有任何 Format C 日志** | 阶段 0 | `~/.kiro/sessions` 是否存在；hash 目录下是否有 `sess_*/messages.jsonl`；注意 `cli` 子目录要跳过（那是 Kiro CLI 的会话，不属于 IDE） |
+| **Kiro 1.0：发现了会话但归属不到当前 workspace** | 阶段 0 | `sess_*/session.json` 的 `workspacePaths` 数组与实际 workspace 路径是否匹配（Windows 上盘符大小写、分隔符差异是常见原因） |
+| **长会话的数据整份丢失** | 阶段 0 | 会话文件体积。旧版上限 5 MB 会静默跳过整份会话，新版提升到 50 MB（40 MB 告警）。`ls -la` 看 `messages.jsonl` 大小 |
+| **装插件之前那段对话没被采集** | 阶段 1 | 冷启动扫描窗口 7 天、单次上限 10 个文件。超窗口或超数量的历史会话不会补采，属预期行为 |
 | Skipping file outside workspace | 阶段 2 | workspace 路径 vs 文件路径，多根 workspace 配置 |
 | Orphan file (no matching repo) | 阶段 2 | this.repos 列表 / git repo 实际位置 |
 | Skipping non-existent file | 阶段 2 | path.resolve 后的绝对路径 / 是否 sibling repo |
@@ -59,6 +68,8 @@
 | 症状 | 优先排查阶段 | 关键证据 |
 |------|------------|---------|
 | hook 文件不存在 | 阶段 4 之前 | 插件 `installPostCommitHook` 是否调到 / repo 是否在递归扫描范围内 |
+| **`.git/hooks/` 下没有 hook，但插件日志说装了** | 阶段 4 之前 | `git config --get core.hooksPath`。企业环境常把它指向 git-defender 等工具目录，hook 装到了那里而不是 `.git/hooks/`——见下方「core.hooksPath」专条 |
+| **Console 出现 `Refusing to modify non-text hook`** | 阶段 4 之前 | 目标 hook 是编译过的二进制（第三方工具装的），插件**有意跳过**不改写。此时靠扩展侧兜底上传，不是故障——见下方「core.hooksPath」专条 |
 | hook 执行报错 | 阶段 5b/5c | 手动跑 `sh .git/hooks/post-commit` 看 stderr |
 | `git-ai post-commit` exit code != 0 | 阶段 5b | git-ai stderr / post_commit_debug.log |
 | stats 上报失败（curl 错） | 阶段 5c | 手动跑 curl / 检查 dashboard URL / 网络连通性 |
@@ -98,13 +109,39 @@
 
 ## 每个阶段的关键证据清单
 
-### 阶段 0 — Kiro execution log
+### 阶段 0 — Kiro 会话日志（两套数据源，先分清是哪套）
 
-**位置**：
-- macOS: `~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/<hash>/<workspace-hash>/<execution-id>`
-- Windows: `%APPDATA%\Kiro\User\globalStorage\kiro.kiroagent\<...>\<...>\<...>`
+| | 旧版 Kiro（Format A/B） | Kiro 1.0（Format C） |
+|---|---|---|
+| 位置 | `<globalStorage>/kiro.kiroagent/<hash>/<workspace-hash>/<execution-id>` | `~/.kiro/sessions/<workspace-hash>/sess_<uuid>/messages.jsonl` |
+| 格式 | 单个 JSON 文档 | 逐行 JSON（JSONL） |
+| workspace 归属 | 文件内 `chatSessionId` 对 `sessions.json` | `sess_*/session.json` 的 `workspacePaths` 数组 |
+| 写入动作 | `actions[]` / `context.messages[]` | `payload.type === "tool_call"` + 配对的 `tool_result` |
+| 文件体积上限 | 50 MB（旧插件版本是 5 MB，超限静默跳过整份会话） | 同左 |
 
-**关键字段**（Format A）：
+**先执行这一步**：
+
+```bash
+ls ~/.kiro/sessions 2>/dev/null && echo "→ 按 Format C 排查" || echo "→ 按 Format A/B 排查"
+```
+
+`~/.kiro/sessions` 全平台同一路径（不像旧版 globalStorage 分三套平台路径）。
+
+#### Format C 关键字段
+
+- `payload.type` == `"tool_call"`，且对应 `toolCallId` 的 `tool_result.success === true`
+- 准入条件：`payload.kind === "edit"` **或** `toolName` ∈ {`str_replace`, `write_file`, `create_file`, `delete_file`, `write_to_file`, `insert_code`, `fs_write`}
+- 内容：`str_replace` 取 `oldStr` / `newStr`；其余取 `args.content ?? args.text`
+- 行级 `timestamp`（ISO）→ `emittedAt`
+- `conversation_id` 取 `sess_` 目录名
+
+**Format C 典型异常**：
+- `~/.kiro/sessions/<hash>/cli/` 下的会话被当成 IDE 会话 → 应跳过，`cli` 是 Kiro CLI 的
+- `session.json` 的 `workspacePaths` 与扩展 API 的 `fsPath` 在 Windows 上盘符大小写/分隔符不一致 → 归属匹配失败，采不到任何数据
+- `tool_call` 有但配对的 `tool_result.success` 不为 true → 该次编辑失败，**不应**计入
+- `str_replace` 只给片段（`oldStr`/`newStr`）而非文件全文 → 插件会从磁盘补读全文；若补读失败会在 Console 打 `Format C: could not read file for dirty_files`
+
+#### Format A/B 关键字段
 - `actions[].actionType` ∈ {replace, create, write, append, editCode, delete, smartRelocate}
 - `actions[].actionState === "Accepted"` 必需
 - `actions[].input.file` / `originalContent` / `modifiedContent`
@@ -126,9 +163,12 @@
 [git-ai-kiro] Skipped (no chatSessionId): ...
 ```
 
+Format C（Kiro 1.0）对应的日志形态不同 —— 走独立的 `processFormatCActions()` 管道，`format=C`，会话 ID 是 `sess_*` 目录名。它按字节偏移**增量**读取（只解析新增字节），所以看到的是"读了 N 字节新内容"而不是重解析全文。
+
 **典型异常**：
-- `actions=0` 但用户确实编辑了 → log format 不识别 / actionState 不是 Accepted
-- `sessionId mismatch` → workspace 隔离机制把当前 log 拒了；可能是 sessions.json 没刷新
+- `actions=0` 但用户确实编辑了 → log format 不识别 / actionState 不是 Accepted（A/B）；`tool_result.success` 不为 true（C）
+- `sessionId mismatch` → workspace 隔离机制把当前 log 拒了；可能是 sessions.json 没刷新（仅 A/B）
+- **完全没有 `format=C` 日志而 `~/.kiro/sessions` 有内容** → 插件版本不支持 Format C，需升级；这是 Kiro 升级后"数据突然全断"的最常见原因
 
 ### 阶段 2 — 路径分组（groupActionsByRepo）
 
@@ -255,6 +295,84 @@ taskkill //F //IM git-ai.exe || pkill -x git-ai || true   # 清残留进程（�
 
 ---
 
+## 三个症状指向错误方向的专条
+
+这三类的共同点：**表面证据看起来都是正常的**，按常规路径排查会走进死胡同。遇到对应症状直接跳到这里。
+
+### 专条 1 — note 解析失败（AI 行全被算成 human）
+
+**症状**：dashboard 上 `ai_additions=0` / `human_additions` 等于全部新增行，但 `git notes --ref=ai show <sha>` 打开一看**完全正常** —— 归属区间在、`total_additions` 对、`accepted_lines` 对。
+
+**根因**：读取侧反序列化失败。`get_authorship()` 拿到 note 内容但解析不了，返回 `None`，调用方于是认为该提交没有任何 AI 归因，把 AI 写的行全部计入 `human_additions`。
+
+**最常见诱因**：客户机上装过**更新版本**的 git-ai（如 1.6.22），它写出的 note 省略了某些本版本视为必填的字段（典型是 `messages`）。note 是 git 对象，会随 push/fetch 传播 —— 即使客户后来卸载了那个版本，**已写进 `refs/notes/ai` 的 note 依然在**。
+
+**判定命令**：
+
+```bash
+# 1. 看 git-ai stderr 有没有告警（关键证据）
+<plugin-bin>/git-ai stats <sha> --json 2>&1 >/dev/null | grep 'could not be parsed'
+
+# 2. 看这条 note 是哪个版本写的
+git -C <repo> notes --ref=ai show <sha> | grep git_ai_version
+
+# 3. 全仓库扫一遍，看有多少 note 来自更新的版本
+git -C <repo> notes --ref=ai list | awk '{print $2}' | while read -r c; do
+  git -C <repo> notes --ref=ai show "$c" 2>/dev/null | grep -o '"git_ai_version": "[^"]*"'
+done | sort | uniq -c
+```
+
+若 stderr 有 `authorship note for X exists but could not be parsed`，证据链就完整了 —— **代码问题**，需要在读取侧对缺失字段做容错，不是环境问题，客户侧无法自行修复。
+
+### 专条 2 — Format C 缺人工基线（人工的行被算成 AI）
+
+**症状**：同一文件，**人工先写若干行、AI 随后改其中一行**，结果全部行都算给 AI（`human_additions=0`）。反向顺序（AI 先写、人工后改）不受影响。
+
+**根因**：Format C 管道只下发 AI checkpoint，没有下发人工基线 checkpoint（Format A/B 走 `buildHumanPayload` 会先发一次人工基线，建立"AI 编辑前"的状态）。Format C 的 `dirty_files` 是从磁盘读的**全文快照**，里面已经包含人工先写的内容，于是这些行一并被归给 AI。
+
+**判定方法**：
+
+```bash
+# 看这次 commit 的 checkpoints.jsonl 里有没有 kind=Human 的记录
+grep -o '"kind":"[^"]*"' <repo>/.git/ai/working_logs/$(git -C <repo> rev-parse HEAD^)/checkpoints.jsonl | sort | uniq -c
+```
+
+Format C 场景下只看到 `AiAgent` 而没有 `Human`，就是这个缺陷。**代码问题，已知**，客户侧无解，只能说明现状。
+
+对照实验（用来向客户/开发者证明）：在人工编辑后先手动跑一次 `sh .git/hooks/pre-commit`（它会触发 `git-ai checkpoint human`），再让 AI 编辑、再 commit —— 归属就正确了。这个差异本身就是证据。
+
+### 专条 3 — core.hooksPath 与非文本 hook
+
+**症状**：插件日志说 hook 装好了，但 `.git/hooks/post-commit` 不存在；或者 Console 里出现 `Refusing to modify non-text hook at <path>`。提交后没有上报。
+
+**根因**：`core.hooksPath` 被配置指向了别处（企业环境里常指向 git-defender 一类安全工具的目录）。插件会**尊重**这个配置，把 hook 装到那里而不是 `.git/hooks/`。若目标位置已有一个**编译过的二进制** hook，插件会主动拒绝改写（避免破坏第三方工具），并跳过安装。
+
+**判定命令**：
+
+```bash
+# 1. 实际生效的 hooks 目录
+git -C <repo> config --get core.hooksPath
+git -C <repo> rev-parse --git-path hooks
+
+# 2. 系统级/全局级是否有设置（企业镜像常在这两层）
+git config --system --get core.hooksPath
+git config --global --get core.hooksPath
+
+# 3. 目标 hook 是不是文本
+file "$(git -C <repo> config --get core.hooksPath)/post-commit"
+
+# 4. 是否显式禁用了 hooks
+#    core.hooksPath 为 /dev/null 或 NUL 时插件识别为用户主动禁用，不会安装
+```
+
+**处理方向**：
+
+- hook 装到了 `core.hooksPath` 指的目录 → 不是故障，去那个目录找 hook 验证内容
+- 目标是非文本 hook 被跳过 → **不是故障**，插件此时依赖扩展侧兜底上传。验证兜底是否生效：看 Console 有没有扩展侧的上传日志，以及 `last_upload_payload.json` 是否仍在追加 `[stats]` 记录
+- 若兜底也没有记录 → 才是真问题，回到阶段 5c 排查
+
+---
+
 ## 常用快速验证命令
 
 ```bash
@@ -283,6 +401,41 @@ sh <repo>/.git/hooks/post-commit
 
 # 看插件激活日志（DevTools Console）
 # Help → Toggle Developer Tools → Console → 筛选 [git-ai-kiro]
+
+# === Kiro 1.0 / Format C ===
+
+# 是不是 Kiro 1.0 的数据源
+ls ~/.kiro/sessions 2>/dev/null && echo "→ Format C" || echo "→ Format A/B"
+
+# 列出当前 workspace 对应的会话（注意跳过 cli 子目录）
+find ~/.kiro/sessions -maxdepth 2 -name 'sess_*' -type d 2>/dev/null | grep -v '/cli/' | head -10
+
+# 看某个会话归属哪个 workspace（路径不匹配是采不到数据的常见原因）
+cat ~/.kiro/sessions/<hash>/sess_<uuid>/session.json | python3 -m json.tool | grep -A5 workspacePaths
+
+# 会话文件大小（超上限会整份被跳过）
+ls -la ~/.kiro/sessions/<hash>/sess_<uuid>/messages.jsonl
+
+# 看最后几个写入动作
+tail -5 ~/.kiro/sessions/<hash>/sess_<uuid>/messages.jsonl | python3 -c 'import sys,json;[print(json.loads(l).get("payload",{}).get("type"),json.loads(l).get("payload",{}).get("toolName")) for l in sys.stdin]'
+
+# === note 解析失败（专条 1）===
+
+# 关键证据：stderr 的告警
+<plugin-bin>/git-ai stats <sha> --json 2>&1 >/dev/null | grep 'could not be parsed'
+
+# 这条 note 是哪个版本写的
+git -C <repo> notes --ref=ai show <sha> | grep git_ai_version
+
+# === core.hooksPath（专条 3）===
+
+git -C <repo> config --get core.hooksPath
+git -C <repo> rev-parse --git-path hooks
+git config --system --get core.hooksPath; git config --global --get core.hooksPath
+
+# === 人工基线是否存在（专条 2）===
+
+grep -o '"kind":"[^"]*"' <repo>/.git/ai/working_logs/$(git -C <repo> rev-parse HEAD^)/checkpoints.jsonl | sort | uniq -c
 
 # === 性能相关（详见 performance-optimization.md §10）===
 
