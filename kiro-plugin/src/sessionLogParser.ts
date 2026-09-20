@@ -339,6 +339,203 @@ export function parseExecutionLog(jsonString: string): ParseResult {
   };
 }
 
+// ── Format C Extraction (New Kiro JSONL sessions) ───────────────────
+
+/**
+ * Set of tool names that represent file-writing operations in Format C logs.
+ * Format C uses the new Kiro JSONL session format (~/.kiro/sessions/...).
+ */
+export const FORMAT_C_WRITE_TOOL_NAMES = new Set<string>([
+  "str_replace",
+  "write_file",
+  "create_file",
+  "delete_file",
+  "write_to_file",
+  "insert_code",
+  "fs_write",
+]);
+
+/**
+ * Extract WriteAction records from Format C JSONL lines.
+ *
+ * Format C is the new Kiro IDE session format where each line is a JSON object:
+ *   {id, timestamp, payload: {type: "tool_call"|"tool_result", toolCallId, toolName, args, ...}}
+ *
+ * Rules:
+ * - Extract lines with `payload.type === "tool_call"` and either:
+ *   - `payload.kind === "edit"`, OR
+ *   - `payload.toolName` in FORMAT_C_WRITE_TOOL_NAMES
+ * - Match each tool_call with its tool_result (via toolCallId) where `success === true`
+ * - Use `payload.actionType` if present, otherwise infer from toolName
+ * - `args.path` → filePath
+ * - `args.newStr` or `args.content` → modifiedContent
+ * - `args.oldStr` → originalContent (str_replace only)
+ */
+export function extractFormatCWriteActions(lines: string[]): WriteAction[] {
+  // First pass: collect tool_result success status by toolCallId
+  const resultMap = new Map<string, boolean>();
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const payload = entry.payload;
+    if (payload == null || typeof payload !== "object") continue;
+    const p = payload as Record<string, unknown>;
+
+    if (p.type === "tool_result" && typeof p.toolCallId === "string") {
+      resultMap.set(p.toolCallId, p.success === true);
+    }
+  }
+
+  // Second pass: extract tool_call entries that are write operations
+  const results: WriteAction[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const payload = entry.payload;
+    if (payload == null || typeof payload !== "object") continue;
+    const p = payload as Record<string, unknown>;
+
+    if (p.type !== "tool_call") continue;
+
+    const toolName = p.toolName;
+    if (typeof toolName !== "string") continue;
+
+    // Filter: must be a write/edit operation
+    const isEditKind = p.kind === "edit";
+    const isWriteTool = FORMAT_C_WRITE_TOOL_NAMES.has(toolName);
+    if (!isEditKind && !isWriteTool) continue;
+
+    // Must have a toolCallId for matching with tool_result
+    const toolCallId = p.toolCallId;
+    if (typeof toolCallId !== "string") continue;
+
+    // Only include if the corresponding tool_result has success === true
+    const success = resultMap.get(toolCallId);
+    if (success !== true) continue;
+
+    // Extract args
+    const args = p.args;
+    if (args == null || typeof args !== "object") continue;
+    const a = args as Record<string, unknown>;
+
+    // File path from args.path
+    const filePath = a.path;
+    if (typeof filePath !== "string") continue;
+
+    // Determine actionType: prefer payload.actionType, fallback to inference
+    let actionType: string;
+    if (typeof p.actionType === "string" && WRITE_ACTION_TYPES.has(p.actionType)) {
+      actionType = p.actionType;
+    } else {
+      // Infer from toolName
+      switch (toolName) {
+        case "str_replace":
+          actionType = "replace";
+          break;
+        case "write_file":
+        case "write_to_file":
+        case "create_file":
+        case "fs_write":
+          actionType = "create";
+          break;
+        case "insert_code":
+          actionType = "write";
+          break;
+        case "delete_file":
+          actionType = "delete";
+          break;
+        default:
+          actionType = "write";
+      }
+    }
+
+    // Extract content fields
+    let originalContent: string | undefined;
+    let modifiedContent: string | undefined;
+
+    if (toolName === "str_replace") {
+      if (typeof a.oldStr === "string") originalContent = a.oldStr;
+      if (typeof a.newStr === "string") modifiedContent = a.newStr;
+    } else if (actionType === "delete") {
+      modifiedContent = "";
+    } else {
+      // write_file / create_file: args.content or args.text
+      const content = a.content ?? a.text;
+      if (typeof content === "string") modifiedContent = content;
+    }
+
+    // Extract timestamp
+    const timestamp = entry.timestamp;
+    let emittedAt: number | undefined;
+    if (typeof timestamp === "string") {
+      const ms = new Date(timestamp).getTime();
+      if (!isNaN(ms)) emittedAt = ms;
+    }
+
+    results.push({
+      actionType,
+      filePath,
+      originalContent,
+      modifiedContent,
+      emittedAt,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Parse a Format C JSONL string (entire file content or incremental chunk)
+ * and return a ParseResult.
+ *
+ * Unlike Format A/B which is a single JSON object, Format C is line-delimited.
+ * The session ID is extracted from session.json separately, so chatSessionId
+ * is not extracted here.
+ */
+export function parseFormatCLog(jsonlContent: string): ParseResult {
+  const lines = jsonlContent.split("\n");
+  const writeActions = extractFormatCWriteActions(lines);
+
+  // Extract the latest timestamp as endTime
+  let endTime: number | undefined;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (typeof entry.timestamp === "string") {
+        const ms = new Date(entry.timestamp).getTime();
+        if (!isNaN(ms)) {
+          endTime = ms;
+          break;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    writeActions,
+    format: "C",
+    endTime,
+  };
+}
+
 // ── Session ID Parsing ───────────────────────────────────────────────
 
 /**

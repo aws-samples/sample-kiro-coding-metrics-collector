@@ -32,11 +32,14 @@
 
 | 模式 | 含义 |
 |------|------|
-| `ai_additions=0, human_additions>0`（应有 AI） | 阶段 4/5b 归属丢失 |
+| `ai_additions=0, human_additions>0`（应有 AI） | 阶段 4/5b 归属丢失。**若 git note 看起来正常，先查 note 解析失败**（`investigation-playbook.md` 专条 1） |
 | `ai_additions+human_additions < git_diff_added_lines` | 有行没归属（空行间隙） |
 | `ai_deletions=0, human_deletions>0`（应有 AI 删除） | kiro_net_deletions 没写入 |
 | 同一 commit_sha 多次出现 | 用户多次提交同 SHA（说明 hook 至少跑了多次） |
-| 缺 [stats] 行但有 commit | post-commit hook 失败 |
+| 缺 [stats] 行但有 commit | post-commit hook 失败。**先确认 hook 是否真的装在生效目录**（专条 3：`core.hooksPath`） |
+| `mixed_additions` 恒为 0 | **已知缺陷，非环境问题**，不要花时间排查 |
+| `human_additions=0` 但人工先写过（Format C） | Format C 缺人工基线 checkpoint（专条 2） |
+| `ai_deletions` 比实际多 1、`human_deletions` 少 1 | **已知缺陷**：note 的 `total_deletions` 固定虚高 1，平时被 `git_diff_deleted_lines` 封顶掩盖 |
 
 ### 命令
 
@@ -264,7 +267,15 @@ cat .git/ai/.commit_msg.tmp
 
 ---
 
-## 7. Kiro execution log（输入端）
+## 7. Kiro 会话日志（输入端）—— 两套数据源
+
+**拉证据前先判断是哪一套**，否则会在不存在的路径里找半天：
+
+```bash
+ls ~/.kiro/sessions 2>/dev/null && echo "→ Kiro 1.0 / Format C" || echo "→ 旧版 / Format A/B"
+```
+
+### 7.1 旧版 Kiro — execution log（Format A/B）
 
 位置：
 - macOS: `~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/<hash>/<workspace-hash>/<execution-id>`
@@ -275,9 +286,47 @@ cat .git/ai/.commit_msg.tmp
 - `actionState` 必须是 `"Accepted"`
 - `chatSessionId` 是否在当前 workspace 的 `sessions.json` 中
 
-### 找当前 workspace 的 hash
+**找当前 workspace 的 hash**：DevTools Console 中找 `Watching execution log directory: ...` 日志，最后一段就是 workspace hash。
 
-DevTools Console 中找 `Watching execution log directory: ...` 日志，最后一段就是 workspace hash。
+### 7.2 Kiro 1.0 — messages.jsonl（Format C）
+
+位置（**全平台统一**，不分三套路径）：`~/.kiro/sessions/<workspace-hash>/sess_<uuid>/`
+
+```
+sess_<uuid>/
+├── messages.jsonl     # 逐行 JSON，写入动作在这里
+└── session.json       # workspacePaths 决定归属哪个 workspace
+```
+
+```bash
+# 列出会话（跳过 cli 子目录——那是 Kiro CLI 的，不属于 IDE）
+find ~/.kiro/sessions -maxdepth 2 -name 'sess_*' -type d | grep -v '/cli/'
+
+# 确认归属（Windows 上盘符大小写/分隔符不一致会导致匹配失败、采不到数据）
+python3 -m json.tool < ~/.kiro/sessions/<hash>/sess_<uuid>/session.json | grep -A5 workspacePaths
+
+# 文件体积（旧插件版本上限 5 MB，超限静默跳过整份会话；新版 50 MB）
+ls -la ~/.kiro/sessions/<hash>/sess_<uuid>/messages.jsonl
+
+# 看最近的写入动作类型
+tail -20 ~/.kiro/sessions/<hash>/sess_<uuid>/messages.jsonl \
+  | python3 -c 'import sys,json
+for l in sys.stdin:
+    p=json.loads(l).get("payload",{})
+    if p.get("type") in ("tool_call","tool_result"):
+        print(p.get("type"), p.get("toolName",""), p.get("success",""))'
+```
+
+**验证要点**：
+- 写入动作 = `payload.type == "tool_call"` **且**对应 `toolCallId` 的 `tool_result.success === true`
+- 准入 toolName：`str_replace`、`write_file`、`create_file`、`delete_file`、`write_to_file`、`insert_code`、`fs_write`（或 `payload.kind === "edit"`）
+- `str_replace` 只给 `oldStr`/`newStr` 片段，插件会从磁盘补读全文；补读失败时 Console 打 `Format C: could not read file for dirty_files`
+- 会话 ID 就是 `sess_` 目录名，会作为 `conversation_id` 出现在 checkpoint 里
+
+**典型异常**：
+- `~/.kiro/sessions` 有内容但 Console 完全没有 `format=C` → 插件版本不支持 Format C，需升级。这是 Kiro 升级后"数据突然全断"的最常见原因
+- `workspacePaths` 与实际 workspace 路径不匹配 → 会话被判为不属于本 workspace，整份跳过
+- 装插件前的历史会话没被采集 → 冷启动扫描窗口 7 天、单次上限 10 个文件，超出属预期行为
 
 ---
 
@@ -301,11 +350,16 @@ grep -oE '"userInfo":{"userId":"[^"]+"' q-client.log | tail -1
 
 实际诊断时按以下顺序拉证据：
 
+0. **零成本前置判断**（两条命令，决定后面往哪儿找证据）：
+   - `ls ~/.kiro/sessions` → 数据源是 Format A/B 还是 C
+   - `git -C <repo> config --get core.hooksPath` → hook 实际装在哪
 1. **第一手**：`last_upload_payload.json`（看症状是什么）
 2. **第二手**：DevTools Console（看流水线哪个阶段出错）
 3. **第三手**：`post_commit_debug.log`（针对 stats 数值问题）
 4. **第四手**：`working_logs/<sha>/`（针对跨 commit 归属问题）
 5. **第五手**：`git notes --ref=ai show <sha>`（最终归属结果）
+   - ⚠️ note **看起来正常也不代表被成功读取**。归属为 0 而 note 正常时，必须补一步：
+     `git-ai stats <sha> --json 2>&1 >/dev/null | grep 'could not be parsed'`
 6. **第六手**：手动跑 hook / 手动跑 git-ai 命令（复现验证）
 
-不要一开始就拉所有证据，按需深入。
+不要一开始就拉所有证据，按需深入。但第 0 步的两条命令**每次都跑** —— 成本几乎为零，却能避免整条排查方向走错。

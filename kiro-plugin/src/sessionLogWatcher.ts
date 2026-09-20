@@ -21,13 +21,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { SessionLogScanner } from "./sessionLogScanner";
+import { parseFormatCLog } from "./sessionLogParser";
 import { buildCheckpointPayload } from "./checkpointPayload";
 import { callCheckpointAgentV1, getIgnorePatterns, matchesIgnorePattern } from "./checkpoint";
 import type { StatusBar } from "./statusBar";
 import type { WriteAction } from "./workspacePathEncoder";
 import { normalizePath, groupActionsByRepo } from "./repoRouter.js";
 import type { RepoInfo } from "./repoRouter.js";
-import { findGitRoot, findGitReposInDir } from "./gitUtils";
+import { findGitRoot, findGitReposInDir, resolveGitCommonDir } from "./gitUtils";
 
 /** Debounce window for file change events (ms). */
 const FILE_CHANGE_DEBOUNCE_MS = 300;
@@ -46,6 +47,10 @@ export class SessionLogWatcher implements vscode.Disposable {
   private watchedExecLogDirs = new Set<string>();
   /** Resolved Agent Dir path (set during start). */
   private agentDir: string = "";
+  /** Maximum number of recent execution-log files to process during cold-start scan. */
+  private static readonly COLD_START_SCAN_LIMIT = 10;
+  /** Time window for cold-start scan: only files modified within this many ms before now are processed. */
+  private static readonly COLD_START_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   /**
    * Tracks actions that have already been checkpointed, keyed by
    * `${filePath}:${emittedAt}`. Prevents duplicate checkpoints when Kiro
@@ -61,6 +66,12 @@ export class SessionLogWatcher implements vscode.Disposable {
   repos: RepoInfo[] = [];
   /** Disposable for the git extension onDidOpenRepository subscription. */
   private gitApiDisposable: vscode.Disposable | null = null;
+  /** Format C: byte offset tracking per messages.jsonl file. */
+  private formatCBytesRead = new Map<string, number>();
+  /** Format C: debounce timers for messages.jsonl changes. */
+  private formatCPending = new Map<string, NodeJS.Timeout>();
+  /** Format C: watched session directories (to avoid duplicate watches). */
+  private watchedKiroSessions = new Set<string>();
 
   constructor(workspacePath: string, scanner?: SessionLogScanner) {
     this.workspacePath = workspacePath;
@@ -247,6 +258,20 @@ export class SessionLogWatcher implements vscode.Disposable {
         }
       }
 
+      // Cold-start scan: process recent execution-log files that existed
+      // BEFORE the watcher started. Without this, AI edits made before the
+      // extension activated (or before sessions.json was ready) never get
+      // checkpointed. Bounded by COLD_START_SCAN_LIMIT and COLD_START_WINDOW_MS
+      // to avoid blocking startup with stale data.
+      this.runColdStartScan().catch((err: unknown) => {
+        console.error(`[git-ai-kiro] Cold-start scan failed:`, err);
+      });
+
+      // Format C: monitor the Kiro 1.0 session store (~/.kiro/sessions/).
+      this.startFormatCMonitoring().catch((err: unknown) => {
+        console.error(`[git-ai-kiro] Format C monitoring setup failed:`, err);
+      });
+
       console.log(
         `[git-ai-kiro] SessionLogWatcher started with ${this.watchers.length} watcher(s)`
       );
@@ -377,6 +402,71 @@ export class SessionLogWatcher implements vscode.Disposable {
         error
       );
     }
+  }
+
+  /**
+   * Cold-start scan: process the most recent execution-log files in every
+   * watched 414d* directory so that AI edits made BEFORE the watcher started
+   * still get checkpointed.
+   *
+   * Bounded by:
+   *   - COLD_START_SCAN_LIMIT files per directory
+   *   - COLD_START_WINDOW_MS lookback window (mtime within last 7 days)
+   *
+   * Files are processed via the regular processExecutionLog path so all
+   * existing safeguards (sessionId filter, repo routing, dedupe) still apply.
+   */
+  private async runColdStartScan(): Promise<void> {
+    const dirs = [...this.watchedExecLogDirs];
+    if (dirs.length === 0) return;
+
+    const cutoffMs = Date.now() - SessionLogWatcher.COLD_START_WINDOW_MS;
+    let totalScanned = 0;
+    let totalProcessed = 0;
+
+    for (const dir of dirs) {
+      let files: string[];
+      try {
+        files = await fs.promises.readdir(dir);
+      } catch {
+        continue;
+      }
+
+      // Build [filePath, mtimeMs] pairs filtered by mtime window
+      const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
+      for (const file of files) {
+        const filePath = path.join(dir, file);
+        try {
+          const stat = await fs.promises.stat(filePath);
+          if (!stat.isFile()) continue;
+          if (stat.mtimeMs < cutoffMs) continue;
+          candidates.push({ filePath, mtimeMs: stat.mtimeMs });
+        } catch {
+          // skip unreadable
+        }
+      }
+
+      // Process most-recent-first, capped at COLD_START_SCAN_LIMIT
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const slice = candidates.slice(0, SessionLogWatcher.COLD_START_SCAN_LIMIT);
+
+      for (const { filePath } of slice) {
+        totalScanned++;
+        try {
+          await this.processExecutionLog(filePath);
+          totalProcessed++;
+        } catch (err) {
+          console.warn(
+            `[git-ai-kiro] Cold-start scan: failed to process ${filePath}:`,
+            err
+          );
+        }
+      }
+    }
+
+    console.log(
+      `[git-ai-kiro] Cold-start scan finished: ${totalProcessed}/${totalScanned} file(s) processed across ${dirs.length} dir(s)`
+    );
   }
 
   /**
@@ -530,32 +620,46 @@ export class SessionLogWatcher implements vscode.Disposable {
               if (ct < (ear.emittedAt ?? 0)) allEarliest.set(wa.filePath, wa);
             }
           }
+          // ── 方案 D - Part C：aiNetDel 也用 git HEAD 作 baseline ───────────
+          // 多轮 AI 编辑时，earliest?.originalContent 是上一轮 AI 的产物，
+          // 会导致 deletions 只算“本轮相对上一轮的增量删除”。改用 git HEAD
+          // 后每次算出的都是“HEAD→latest disk”的累计删除值，覆盖写入
+          // kiro_net_deletions 后最后一次即为期望的总量。
+          const headBaselineCache = new Map<string, string | null>();
+          const readGitHeadBaseline = (fp: string): string | null => {
+            if (headBaselineCache.has(fp)) return headBaselineCache.get(fp)!;
+            let result: string | null = null;
+            try {
+              const { execFileSync } = require("node:child_process");
+              const gitOutput = execFileSync("git", ["show", `HEAD:${fp}`], {
+                cwd: group.repoPath,
+                encoding: "utf-8",
+                timeout: 5000,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+              result = gitOutput;
+            } catch {
+              result = null;
+            }
+            headBaselineCache.set(fp, result);
+            return result;
+          };
+
           let aiNetDel = 0;
           for (const [fp, latest] of allLatest) {
             if (ignPats.length > 0 && matchesIgnorePatternSafe(fp, ignPats)) continue;
             const earliest = allEarliest.get(fp);
-            let orig = earliest?.originalContent;
             const mod = latest.modifiedContent;
             const isDeleteAction = latest.actionType === "delete";
 
-            // 删除文件场景：originalContent 可能缺失，从 git HEAD 读取原始内容
-            if (isDeleteAction && (orig === undefined || orig === "")) {
-              try {
-                const { execFileSync } = require("node:child_process");
-                const gitOutput = execFileSync("git", ["show", `HEAD:${fp}`], {
-                  cwd: group.repoPath,
-                  encoding: "utf-8",
-                  timeout: 5000,
-                  stdio: ["ignore", "pipe", "pipe"],
-                });
-                orig = gitOutput;
-              } catch {
-                // 文件不在 git 中（新建后又删除），跳过
-                continue;
-              }
+            // 优先用 git HEAD 作 baseline，多轮 AI 编辑也能正确累计删除。
+            // 文件不在 HEAD（新建后又被编辑/删除）时才回退到 originalContent。
+            let orig: string | undefined = readGitHeadBaseline(fp) ?? undefined;
+            if (orig === undefined) {
+              orig = earliest?.originalContent;
             }
 
-            // 需要 originalContent 才能计算删除行数
+            // 需要 baseline 才能计算删除行数
             if (orig === undefined) continue;
 
             // modifiedContent 为 undefined 或 delete 操作时，视为空文件
@@ -596,7 +700,7 @@ export class SessionLogWatcher implements vscode.Disposable {
               if (!fs.existsSync(aiDir)) fs.mkdirSync(aiDir, { recursive: true });
               const netDelFile = path.join(aiDir, "kiro_net_deletions");
               fs.writeFileSync(netDelFile, String(aiNetDel), "utf-8");
-              console.log(`[git-ai-kiro] AI net deletions: ${aiNetDel} written to ${netDelFile}`);
+              console.log(`[git-ai-kiro] AI net deletions: ${aiNetDel} written to ${netDelFile} (HEAD-baselined, multi-turn safe)`);
             } catch (err) {
               console.warn(`[git-ai-kiro] Failed to write kiro_net_deletions: ${err}`);
             }
@@ -1053,6 +1157,406 @@ export class SessionLogWatcher implements vscode.Disposable {
   }
 
   /**
+   * Start monitoring the new Kiro session directory (~/.kiro/sessions/).
+   * Discovers existing sessions for this workspace and watches for new ones.
+   */
+  private async startFormatCMonitoring(): Promise<void> {
+    // Discover existing sessions with messages.jsonl
+    const messagesFiles = await this.scanner.discoverWorkspaceSessions(this.workspacePath);
+
+    if (messagesFiles.length > 0) {
+      console.log(
+        `[git-ai-kiro] Format C: found ${messagesFiles.length} existing session(s) for workspace`
+      );
+    }
+
+    for (const msgFile of messagesFiles) {
+      this.watchMessagesJsonl(msgFile);
+    }
+
+    // Also watch the workspace hash directory for new sess_* directories
+    const hashDir = await this.scanner.findKiroSessionHashDir(this.workspacePath);
+    if (hashDir) {
+      this.watchKiroSessionHashDir(hashDir);
+    } else {
+      // Watch the top-level sessions dir for new workspace hash directories
+      const sessionsDir = SessionLogScanner.resolveKiroSessionDir();
+      try {
+        await fs.promises.access(sessionsDir);
+        this.watchKiroSessionsTopDir(sessionsDir);
+      } catch {
+        console.log(`[git-ai-kiro] Format C: ~/.kiro/sessions/ does not exist yet`);
+      }
+    }
+  }
+
+  /**
+   * Watch a single messages.jsonl file for new appended lines.
+   * Uses byte-offset tracking to only read incremental data.
+   */
+  private watchMessagesJsonl(messagesPath: string): void {
+    if (this.watchedKiroSessions.has(messagesPath)) return;
+    this.watchedKiroSessions.add(messagesPath);
+
+    // Initialize byte offset to current file size (skip existing content on startup
+    // unless within cold-start window)
+    const initOffset = async () => {
+      try {
+        const stat = await fs.promises.stat(messagesPath);
+        const cutoff = Date.now() - SessionLogWatcher.COLD_START_WINDOW_MS;
+        if (stat.mtimeMs >= cutoff) {
+          // File recently modified — process from beginning for cold-start
+          this.formatCBytesRead.set(messagesPath, 0);
+          // Trigger initial processing
+          this.processMessagesJsonlIncremental(messagesPath);
+        } else {
+          // Old file — skip to end
+          this.formatCBytesRead.set(messagesPath, stat.size);
+        }
+      } catch {
+        this.formatCBytesRead.set(messagesPath, 0);
+      }
+    };
+
+    initOffset();
+
+    // Watch the session directory (parent of messages.jsonl) for changes
+    const sessDir = path.dirname(messagesPath);
+    try {
+      const watcher = fs.watch(sessDir, (eventType, filename) => {
+        if (filename !== "messages.jsonl") return;
+        this.debounceFormatC(messagesPath);
+      });
+
+      watcher.on("error", (error) => {
+        console.warn(
+          `[git-ai-kiro] Format C: fs.watch error on ${sessDir}:`,
+          error
+        );
+      });
+
+      this.watchers.push(watcher);
+      console.log(`[git-ai-kiro] Format C: watching ${path.basename(path.dirname(sessDir))}/${path.basename(sessDir)}/messages.jsonl`);
+    } catch (error) {
+      console.warn(
+        `[git-ai-kiro] Format C: failed to watch ${sessDir}:`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Watch a workspace hash directory for new sess_* subdirectories.
+   */
+  private watchKiroSessionHashDir(hashDir: string): void {
+    try {
+      const watcher = fs.watch(hashDir, (eventType, filename) => {
+        if (!filename || !filename.startsWith("sess_")) return;
+
+        const sessPath = path.join(hashDir, filename);
+        const messagesPath = path.join(sessPath, "messages.jsonl");
+
+        // Delay to let the directory be fully created
+        setTimeout(async () => {
+          try {
+            await fs.promises.access(messagesPath);
+            this.watchMessagesJsonl(messagesPath);
+          } catch {
+            // messages.jsonl not yet created
+          }
+        }, 500);
+      });
+
+      watcher.on("error", (error) => {
+        console.warn(
+          `[git-ai-kiro] Format C: fs.watch error on hash dir ${hashDir}:`,
+          error
+        );
+      });
+
+      this.watchers.push(watcher);
+      console.log(`[git-ai-kiro] Format C: watching hash dir ${path.basename(hashDir)} for new sessions`);
+    } catch (error) {
+      console.warn(
+        `[git-ai-kiro] Format C: failed to watch hash dir ${hashDir}:`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Watch the top-level ~/.kiro/sessions/ directory for new workspace hash directories.
+   */
+  private watchKiroSessionsTopDir(sessionsDir: string): void {
+    try {
+      const watcher = fs.watch(sessionsDir, (eventType, filename) => {
+        if (!filename || filename === "cli") return;
+
+        const hashPath = path.join(sessionsDir, filename);
+
+        // Delay and then check if this new directory is relevant
+        setTimeout(async () => {
+          try {
+            const stat = await fs.promises.stat(hashPath);
+            if (!stat.isDirectory()) return;
+
+            // Discover sessions in this new hash dir for our workspace
+            const normalizedWs = this.workspacePath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+            const sessDirs = await fs.promises.readdir(hashPath);
+
+            for (const sessEntry of sessDirs) {
+              if (!sessEntry.startsWith("sess_")) continue;
+              const sessionJsonPath = path.join(hashPath, sessEntry, "session.json");
+              try {
+                const content = await fs.promises.readFile(sessionJsonPath, "utf-8");
+                const meta = JSON.parse(content) as Record<string, unknown>;
+                if (Array.isArray(meta.workspacePaths)) {
+                  const matches = meta.workspacePaths.some((wp: unknown) => {
+                    if (typeof wp !== "string") return false;
+                    return wp.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === normalizedWs;
+                  });
+                  if (matches) {
+                    this.watchKiroSessionHashDir(hashPath);
+                    const msgPath = path.join(hashPath, sessEntry, "messages.jsonl");
+                    try {
+                      await fs.promises.access(msgPath);
+                      this.watchMessagesJsonl(msgPath);
+                    } catch {
+                      // will be picked up when sess dir watcher fires
+                    }
+                    break;
+                  }
+                }
+              } catch {
+                continue;
+              }
+            }
+          } catch {
+            // directory may not exist yet
+          }
+        }, 1000);
+      });
+
+      watcher.on("error", (error) => {
+        console.warn(
+          `[git-ai-kiro] Format C: fs.watch error on sessions dir:`,
+          error
+        );
+      });
+
+      this.watchers.push(watcher);
+      console.log(`[git-ai-kiro] Format C: watching top-level sessions dir for new workspaces`);
+    } catch (error) {
+      console.warn(
+        `[git-ai-kiro] Format C: failed to watch sessions dir:`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Debounce Format C messages.jsonl changes.
+   */
+  private debounceFormatC(messagesPath: string): void {
+    const existing = this.formatCPending.get(messagesPath);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.formatCPending.delete(messagesPath);
+      this.processMessagesJsonlIncremental(messagesPath);
+    }, FILE_CHANGE_DEBOUNCE_MS);
+
+    this.formatCPending.set(messagesPath, timer);
+  }
+
+  /**
+   * Read new lines from messages.jsonl since last byte offset, parse with
+   * Format C parser, and feed resulting WriteActions into the checkpoint pipeline.
+   */
+  private async processMessagesJsonlIncremental(messagesPath: string): Promise<void> {
+    try {
+      const stat = await fs.promises.stat(messagesPath);
+      const lastOffset = this.formatCBytesRead.get(messagesPath) ?? 0;
+
+      if (stat.size <= lastOffset) return; // No new data
+
+      // Read only the new bytes
+      const fd = await fs.promises.open(messagesPath, "r");
+      try {
+        const newBytes = stat.size - lastOffset;
+        const buffer = Buffer.alloc(newBytes);
+        await fd.read(buffer, 0, newBytes, lastOffset);
+
+        // Only consume up to the last COMPLETE line, and advance the offset by
+        // exactly that much. Kiro appends one JSON object per line and always
+        // terminates it with \n, but an fs.watch event can arrive while a long
+        // line (e.g. an fs_write carrying a large file body) is still being
+        // flushed. Advancing straight to stat.size would skip past that partial
+        // line: it fails to parse, gets dropped, and the completed line is never
+        // re-read — silently losing the write action.
+        //
+        // Searching for \n at the byte level is safe: 0x0A never appears inside
+        // a multi-byte UTF-8 sequence, so this never splits a character.
+        const lastNewline = buffer.lastIndexOf(0x0a);
+        if (lastNewline === -1) {
+          // No complete line yet — leave the offset untouched and wait for the
+          // next event to deliver the rest of the line.
+          return;
+        }
+        const consumed = lastNewline + 1;
+        const newContent = buffer.subarray(0, consumed).toString("utf-8");
+
+        // Update offset to the end of the last complete line
+        this.formatCBytesRead.set(messagesPath, lastOffset + consumed);
+
+        // Parse Format C
+        const parseResult = parseFormatCLog(newContent);
+        if (parseResult.writeActions.length === 0) return;
+
+        console.log(
+          `[git-ai-kiro] Format C: parsed ${parseResult.writeActions.length} write action(s) from ${path.basename(path.dirname(messagesPath))}`
+        );
+
+        // Extract session ID from path for conversation_id
+        // Path: .../sess_<uuid>/messages.jsonl → parent dir name is the session ID
+        const sessionId = path.basename(path.dirname(messagesPath));
+
+        // Feed into existing checkpoint pipeline (reuse processExecutionLog's
+        // downstream logic: path filtering, repo grouping, checkpoint call)
+        await this.processFormatCActions(parseResult.writeActions, sessionId);
+      } finally {
+        await fd.close();
+      }
+    } catch (error) {
+      console.warn(
+        `[git-ai-kiro] Format C: error processing ${messagesPath}:`,
+        error
+      );
+    }
+  }
+
+  /**
+   * Process Format C write actions through the same path filter and checkpoint
+   * logic as Format A/B actions (lines 650+ of processExecutionLog).
+   */
+  private async processFormatCActions(writeActions: WriteAction[], sessionId?: string): Promise<void> {
+    // Deduplicate against already-checkpointed actions
+    const newActions = writeActions.filter((wa) => {
+      const key = `${wa.filePath}:${wa.emittedAt ?? "none"}`;
+      return !this.checkpointedActions.has(key);
+    });
+
+    if (newActions.length === 0) return;
+
+    const ignorePatterns = getIgnorePatterns();
+
+    // Group actions by repository (same logic as processExecutionLog)
+    const workspacePrefix = normalizePath(this.workspacePath).toLowerCase();
+    const workspaceFilteredActions = newActions.map((action) => {
+      let fp = action.filePath;
+      const normalizedFp = normalizePath(fp);
+      const wsNorm = normalizePath(this.workspacePath);
+
+      if (normalizedFp.toLowerCase().startsWith(workspacePrefix)) {
+        fp = normalizedFp.slice(wsNorm.length).replace(/^\//, "");
+      }
+      return { ...action, filePath: fp };
+    }).filter((action) => {
+      // Filter: only keep paths under workspace
+      const absPath = normalizePath(path.resolve(this.workspacePath, action.filePath));
+      if (!absPath.toLowerCase().startsWith(workspacePrefix)) return false;
+      // Apply ignore patterns
+      if (ignorePatterns.length > 0 && matchesIgnorePatternSafe(action.filePath, ignorePatterns)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (workspaceFilteredActions.length === 0) return;
+
+    console.log(
+      `[git-ai-kiro] Format C: processing ${workspaceFilteredActions.length} workspace-filtered action(s)`
+    );
+
+    // Group by repo and checkpoint
+    const { groups } = groupActionsByRepo(workspaceFilteredActions, this.repos, this.workspacePath);
+
+    for (const group of groups) {
+      if (group.actions.length === 0) continue;
+
+      const absoluteRepo = path.isAbsolute(group.repoPath)
+        ? group.repoPath
+        : path.resolve(this.workspacePath, group.repoPath);
+
+      // Verify the repo really has a git dir before dispatching a checkpoint.
+      // NOTE: resolveGitCommonDir always returns a non-empty string (it falls
+      // back to `<repo>/.git`), so a truthiness check would never fire — the
+      // existence of the resolved path is what actually needs verifying.
+      const gitCommonDir = resolveGitCommonDir(absoluteRepo);
+      if (!fs.existsSync(gitCommonDir)) {
+        console.warn(
+          `[git-ai-kiro] Format C: no git dir at ${gitCommonDir} for repo ${absoluteRepo}, skipping`
+        );
+        continue;
+      }
+
+      // Build AI checkpoint payload.
+      // buildCheckpointPayload may use originalContent snippets which are not full
+      // file content in Format C (str_replace), so we override dirty_files with disk content.
+      const payload = await buildCheckpointPayload(absoluteRepo, group.actions, sessionId ?? "kiro-format-c", ignorePatterns);
+
+      // Override dirty_files: read current (post-AI-edit) content from disk
+      const aiDirtyFiles: Record<string, string> = {};
+      const editedFilePaths = new Set<string>();
+      for (const action of group.actions) {
+        editedFilePaths.add(action.filePath);
+      }
+      for (const fp of editedFilePaths) {
+        if (ignorePatterns.length > 0 && matchesIgnorePatternSafe(fp, ignorePatterns)) {
+          continue;
+        }
+        try {
+          const absPath = path.resolve(absoluteRepo, fp);
+          const diskContent = await fs.promises.readFile(absPath, "utf-8");
+          aiDirtyFiles[fp] = diskContent.replace(/\r\n/g, "\n");
+        } catch {
+          console.log(`[git-ai-kiro] Format C: could not read file for dirty_files: ${fp}`);
+        }
+      }
+
+      const finalPayload = { ...payload, dirty_files: aiDirtyFiles };
+
+      console.log(
+        `[git-ai-kiro] Format C: calling checkpoint for repo=${absoluteRepo}, ` +
+        `files=${finalPayload.edited_filepaths.length}, dirty_keys=${Object.keys(finalPayload.dirty_files).length}`
+      );
+
+      const ok = await callCheckpointAgentV1(absoluteRepo, finalPayload);
+
+      if (ok) {
+        // Mark actions as checkpointed
+        for (const action of group.actions) {
+          const key = `${action.filePath}:${action.emittedAt ?? "none"}`;
+          this.checkpointedActions.add(key);
+          if (this.checkpointedActions.size > SessionLogWatcher.MAX_CHECKPOINTED_ACTIONS) {
+            const first = this.checkpointedActions.values().next().value;
+            if (first !== undefined) this.checkpointedActions.delete(first);
+          }
+        }
+        // Update status bar
+        if (this.statusBar) {
+          this.statusBar.setState("success");
+        }
+      } else {
+        console.error(`[git-ai-kiro] Format C: checkpoint failed for repo ${absoluteRepo}`);
+        if (this.statusBar) {
+          this.statusBar.setState("failure");
+        }
+      }
+    }
+  }
+
+  /**
    * Clean up all watchers, timers, and pending changes.
    */
   dispose(): void {
@@ -1076,6 +1580,15 @@ export class SessionLogWatcher implements vscode.Disposable {
       clearTimeout(timer);
     }
     this.pendingChanges.clear();
+
+    // Same for the Format C debounce timers. Without this, a pending timer can
+    // fire after dispose() and drive a checkpoint on a torn-down watcher.
+    for (const timer of this.formatCPending.values()) {
+      clearTimeout(timer);
+    }
+    this.formatCPending.clear();
+    this.formatCBytesRead.clear();
+    this.watchedKiroSessions.clear();
 
     // Clear tracking state
     this.lastProcessedSize.clear();

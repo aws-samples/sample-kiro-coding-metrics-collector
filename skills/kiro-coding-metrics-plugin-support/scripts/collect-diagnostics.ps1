@@ -41,7 +41,39 @@ if (Test-Path $kiroExtDir) {
 }
 Write-Output ""
 
-Write-Output "=== 3. Hook 文件 ==="
+Write-Output "=== 3. Hook 生效位置 (core.hooksPath) ==="
+# 企业环境常把 core.hooksPath 指向安全工具目录，hook 不在 .git\hooks 下。
+# 不先确认这个，"hook 不存在"的结论会是错的。
+$repoHooksPath   = (git -C $repoRoot config --get core.hooksPath 2>$null) -join ""
+$globalHooksPath = (git config --global --get core.hooksPath 2>$null) -join ""
+$systemHooksPath = (git config --system --get core.hooksPath 2>$null) -join ""
+Write-Output ("repo   core.hooksPath: " + $(if ($repoHooksPath)   { $repoHooksPath }   else { "(未设置)" }))
+Write-Output ("global core.hooksPath: " + $(if ($globalHooksPath) { $globalHooksPath } else { "(未设置)" }))
+Write-Output ("system core.hooksPath: " + $(if ($systemHooksPath) { $systemHooksPath } else { "(未设置)" }))
+$effectiveHooksDir = (git -C $repoRoot rev-parse --git-path hooks 2>$null) -join ""
+if ($effectiveHooksDir -and -not [System.IO.Path]::IsPathRooted($effectiveHooksDir)) {
+    $effectiveHooksDir = Join-Path $repoRoot $effectiveHooksDir
+}
+Write-Output "实际生效 hooks 目录: $effectiveHooksDir"
+if ($effectiveHooksDir -and (Test-Path $effectiveHooksDir)) {
+    Get-ChildItem $effectiveHooksDir -ErrorAction SilentlyContinue |
+        Select-Object -First 20 | Format-Table Name, Length, LastWriteTime
+    foreach ($h in @("pre-commit", "post-commit")) {
+        $hp = Join-Path $effectiveHooksDir $h
+        if (Test-Path $hp) {
+            # 非文本 hook（第三方工具的编译产物）插件会拒绝改写并跳过安装
+            $bytes = [System.IO.File]::ReadAllBytes($hp) | Select-Object -First 4
+            $isText = -not ($bytes -contains 0)
+            $marker = (Select-String -Path $hp -Pattern "git-ai-kiro" -SimpleMatch -ErrorAction SilentlyContinue | Measure-Object).Count
+            Write-Output "$h  文本文件: $isText  含 git-ai-kiro marker: $marker  大小: $((Get-Item $hp).Length)"
+        }
+    }
+} else {
+    Write-Output "(生效 hooks 目录不存在)"
+}
+Write-Output ""
+
+Write-Output "=== 3b. Hook 文件内容 (.git\hooks 下) ==="
 $preHook = "$repoRoot\.git\hooks\pre-commit"
 $postHook = "$repoRoot\.git\hooks\post-commit"
 Write-Output "--- pre-commit ---"
@@ -118,6 +150,72 @@ if ($latestSha) {
     Write-Output "Commit: $latestSha"
     $note = git -C $repoRoot notes --ref=ai show $latestSha 2>$null
     if ($note) { Write-Output $note } else { Write-Output "(无 ai note)" }
+}
+Write-Output ""
+
+Write-Output "=== 8b. note 是否能被当前二进制解析 (AI 行被算成 human 的隐蔽根因) ==="
+# note 内容看起来正常但读取侧解析失败时，AI 归因会被整份丢弃、全部计入 human。
+# 诱因通常是客户机上装过更新版 git-ai，它写的 note 含本版本不识别的结构。
+if ($gitAiDir -and $latestSha) {
+    $gitAiBin = Join-Path $gitAiDir "bin\git-ai.exe"
+    if (Test-Path $gitAiBin) {
+        Write-Output "--- stats stderr (关注 'could not be parsed') ---"
+        Push-Location $repoRoot
+        & $gitAiBin stats $latestSha --json 2>&1 1>$null | Select-Object -First 10
+        Pop-Location
+    }
+}
+Write-Output "--- 各 note 是由哪个 git-ai 版本写的 (版本混用是诱因) ---"
+$noteShas = (git -C $repoRoot notes --ref=ai list 2>$null) | ForEach-Object { ($_ -split '\s+')[1] } | Select-Object -First 40
+$noteShas | ForEach-Object {
+    $n = git -C $repoRoot notes --ref=ai show $_ 2>$null
+    if ($n) { ($n | Select-String -Pattern '"git_ai_version": "[^"]*"').Matches.Value }
+} | Group-Object | Sort-Object Count -Descending | Format-Table Count, Name
+Write-Output ""
+
+Write-Output "=== 8c. Kiro 1.0 会话日志 (Format C 数据源) ==="
+# 旧版 Kiro 写 globalStorage 下的 execution log；Kiro 1.0 改到这里。
+# 客户升级 Kiro 后若插件不支持 Format C，会表现为"AI 数据突然全断"。
+$kiroSessions = "$env:USERPROFILE\.kiro\sessions"
+if (Test-Path $kiroSessions) {
+    Write-Output "存在: $kiroSessions  -> 数据源可能是 Format C"
+    Write-Output "--- 会话目录 (跳过 cli，那是 Kiro CLI 的会话) ---"
+    Get-ChildItem $kiroSessions -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ChildItem $_.FullName -Directory -Filter "sess_*" -ErrorAction SilentlyContinue
+    } | Where-Object { $_.FullName -notmatch '\\cli\\' } | Select-Object -First 10 | ForEach-Object {
+        $sdir = $_.FullName
+        Write-Output "[$sdir]"
+        $mj = Join-Path $sdir "messages.jsonl"
+        if (Test-Path $mj) {
+            # 体积很关键：超上限的会话会被整份静默跳过
+            Write-Output ("  messages.jsonl 大小: " + (Get-Item $mj).Length + " bytes")
+            Write-Output ("  行数: " + (Get-Content $mj -ErrorAction SilentlyContinue | Measure-Object -Line).Lines)
+        } else {
+            Write-Output "  (无 messages.jsonl —— 该会话不会被采集)"
+        }
+        # workspacePaths 决定归属，Windows 上盘符大小写/分隔符不一致会导致匹配失败
+        $sj = Join-Path $sdir "session.json"
+        if (Test-Path $sj) {
+            try {
+                $obj = Get-Content $sj -Raw | ConvertFrom-Json
+                Write-Output ("  workspacePaths: " + ($obj.workspacePaths -join ", "))
+                Write-Output ("  lastModifiedAt: " + $obj.lastModifiedAt)
+            } catch { Write-Output "  (session.json 解析失败)" }
+        } else {
+            Write-Output "  (无 session.json —— 无法判定归属哪个 workspace)"
+        }
+    }
+} else {
+    Write-Output "(不存在 $kiroSessions -> 数据源应为旧版 execution log / Format A/B)"
+}
+Write-Output ""
+Write-Output "--- 旧版 execution log 目录 (Format A/B) ---"
+$execLogRoot = "$env:APPDATA\Kiro\User\globalStorage\kiro.kiroagent"
+if (Test-Path $execLogRoot) {
+    Get-ChildItem $execLogRoot -Directory -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+        Select-Object -First 10 -ExpandProperty FullName
+} else {
+    Write-Output "(不存在)"
 }
 Write-Output ""
 

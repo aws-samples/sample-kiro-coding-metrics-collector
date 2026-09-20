@@ -42,7 +42,33 @@ else
 fi
 echo ""
 
-echo "=== 3. Hook 文件 ==="
+echo "=== 3. Hook 生效位置（core.hooksPath）==="
+# 企业环境常把 core.hooksPath 指向安全工具目录，hook 不在 .git/hooks 下。
+# 不先确认这个，"hook 不存在"的结论会是错的。
+echo "repo   core.hooksPath: $(git -C "$REPO_ROOT" config --get core.hooksPath 2>/dev/null || echo '(未设置)')"
+echo "global core.hooksPath: $(git config --global --get core.hooksPath 2>/dev/null || echo '(未设置)')"
+echo "system core.hooksPath: $(git config --system --get core.hooksPath 2>/dev/null || echo '(未设置)')"
+EFFECTIVE_HOOKS_DIR="$(git -C "$REPO_ROOT" rev-parse --git-path hooks 2>/dev/null)"
+case "$EFFECTIVE_HOOKS_DIR" in
+  /*) ;;
+  *) EFFECTIVE_HOOKS_DIR="$REPO_ROOT/$EFFECTIVE_HOOKS_DIR" ;;
+esac
+echo "实际生效 hooks 目录: $EFFECTIVE_HOOKS_DIR"
+if [ -d "$EFFECTIVE_HOOKS_DIR" ]; then
+  ls -la "$EFFECTIVE_HOOKS_DIR" 2>/dev/null | head -20
+  for h in pre-commit post-commit; do
+    if [ -f "$EFFECTIVE_HOOKS_DIR/$h" ]; then
+      # 非文本 hook（第三方工具的编译产物）插件会拒绝改写并跳过安装
+      echo "$h 文件类型: $(file -b "$EFFECTIVE_HOOKS_DIR/$h" 2>/dev/null)"
+      echo "$h 含 git-ai-kiro marker: $(grep -c 'git-ai-kiro' "$EFFECTIVE_HOOKS_DIR/$h" 2>/dev/null | head -1)"
+    fi
+  done
+else
+  echo "(生效 hooks 目录不存在)"
+fi
+echo ""
+
+echo "=== 3b. Hook 文件内容（.git/hooks 下）==="
 echo "--- pre-commit ---"
 if [ -f "$REPO_ROOT/.git/hooks/pre-commit" ]; then
   ls -la "$REPO_ROOT/.git/hooks/pre-commit"
@@ -110,6 +136,68 @@ LATEST_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
 if [ -n "$LATEST_SHA" ]; then
   echo "Commit: $LATEST_SHA"
   git -C "$REPO_ROOT" notes --ref=ai show "$LATEST_SHA" 2>/dev/null || echo "(无 ai note)"
+fi
+echo ""
+
+echo "=== 8b. note 是否能被当前二进制解析（AI 行被算成 human 的隐蔽根因） ==="
+# note 内容看起来正常但读取侧解析失败时，AI 归因会被整份丢弃、全部计入 human。
+# 诱因通常是客户机上装过更新版 git-ai，它写的 note 含本版本不识别的结构。
+if [ -n "$GIT_AI_DIR" ] && [ -n "$LATEST_SHA" ]; then
+  GITAI_BIN="$GIT_AI_DIR/bin/git-ai"
+  [ -f "$GITAI_BIN" ] || GITAI_BIN="$GIT_AI_DIR/bin/git-ai-linux"
+  if [ -f "$GITAI_BIN" ]; then
+    echo "--- stats stderr（关注 'could not be parsed'） ---"
+    (cd "$REPO_ROOT" && "$GITAI_BIN" stats "$LATEST_SHA" --json 2>&1 >/dev/null | head -10) || true
+  fi
+fi
+echo "--- 各 note 是由哪个 git-ai 版本写的（版本混用是诱因） ---"
+git -C "$REPO_ROOT" notes --ref=ai list 2>/dev/null | awk '{print $2}' | head -40 | while read -r c; do
+  git -C "$REPO_ROOT" notes --ref=ai show "$c" 2>/dev/null | grep -o '"git_ai_version": "[^"]*"'
+done | sort | uniq -c
+echo ""
+
+echo "=== 8c. Kiro 1.0 会话日志（Format C 数据源） ==="
+# 旧版 Kiro 写 globalStorage 下的 execution log；Kiro 1.0 改到这里。
+# 客户升级 Kiro 后若插件不支持 Format C，会表现为"AI 数据突然全断"。
+KIRO_SESSIONS="$HOME/.kiro/sessions"
+if [ -d "$KIRO_SESSIONS" ]; then
+  echo "存在: $KIRO_SESSIONS  → 数据源可能是 Format C"
+  echo "--- 会话目录（跳过 cli，那是 Kiro CLI 的会话） ---"
+  find "$KIRO_SESSIONS" -maxdepth 2 -name 'sess_*' -type d 2>/dev/null | grep -v '/cli/' | head -10 | while read -r sdir; do
+    echo "[$sdir]"
+    MJ="$sdir/messages.jsonl"
+    if [ -f "$MJ" ]; then
+      # 体积很关键：超上限的会话会被整份静默跳过
+      ls -la "$MJ" 2>/dev/null | awk '{print "  messages.jsonl 大小:", $5, "bytes"}'
+      echo "  行数: $(wc -l < "$MJ" 2>/dev/null | tr -d ' ')"
+    else
+      echo "  (无 messages.jsonl —— 该会话不会被采集)"
+    fi
+    # workspacePaths 决定归属，Windows 上盘符大小写/分隔符不一致会导致匹配失败
+    if [ -f "$sdir/session.json" ]; then
+      python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+print('  workspacePaths:', d.get('workspacePaths'))
+print('  lastModifiedAt:', d.get('lastModifiedAt'))
+" "$sdir/session.json" 2>/dev/null || echo "  (session.json 解析失败)"
+    else
+      echo "  (无 session.json —— 无法判定归属哪个 workspace)"
+    fi
+  done
+else
+  echo "(不存在 $KIRO_SESSIONS → 数据源应为旧版 execution log / Format A/B)"
+fi
+echo ""
+echo "--- 旧版 execution log 目录（Format A/B） ---"
+case "$(uname -s)" in
+  Darwin*) EXEC_LOG_ROOT="$HOME/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent" ;;
+  *)       EXEC_LOG_ROOT="$HOME/.config/Kiro/User/globalStorage/kiro.kiroagent" ;;
+esac
+if [ -d "$EXEC_LOG_ROOT" ]; then
+  find "$EXEC_LOG_ROOT" -maxdepth 2 -type d 2>/dev/null | head -10
+else
+  echo "(不存在)"
 fi
 echo ""
 

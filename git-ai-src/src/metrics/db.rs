@@ -121,11 +121,23 @@ impl MetricsDatabase {
                 return Ok(());
             }
             if current_version > SCHEMA_VERSION {
-                return Err(GitAiError::Generic(format!(
-                    "Metrics database schema version {} is newer than supported version {}. \
-                     Please upgrade git-ai to the latest version.",
+                // The shared metrics DB (~/.git-ai/internal/metrics-db) has been
+                // migrated by a NEWER git-ai installed elsewhere on this machine —
+                // e.g. a standalone install alongside the one bundled in the Kiro
+                // extension. We must not touch a schema we do not understand.
+                //
+                // This is benign: the metrics DB holds git-ai's own telemetry and is
+                // not involved in authorship/attribution, so degrade to a throwaway
+                // in-memory database. Writes then succeed and are discarded, keeping
+                // every caller working without emitting an error per invocation.
+                eprintln!(
+                    "[git-ai] note: metrics DB schema v{} was written by a newer git-ai \
+                     (this build supports v{}); metrics recording disabled for this run. \
+                     Attribution and stats are unaffected.",
                     current_version, SCHEMA_VERSION
-                )));
+                );
+                self.conn = Connection::open_in_memory()?;
+                // Fall through so the in-memory DB gets this build's schema.
             }
         }
 
@@ -346,6 +358,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn test_newer_schema_degrades_instead_of_failing() {
+        // 复现真实场景：本机另装了更新版 git-ai，已把共享的
+        // ~/.git-ai/internal/metrics-db 迁移到高于本 build 支持的 schema 版本。
+        // 此前这里会返回 Err，调用方打印
+        // "[Error] Failed to initialize metrics database"，每次 checkpoint 刷一条。
+        // 现在应降级为内存库并成功返回，让归因/统计流程照常进行。
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("newer-metrics.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        let future_version = SCHEMA_VERSION + 3;
+        conn.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES ('version', ?1)",
+            params![future_version.to_string()],
+        )
+        .unwrap();
+
+        let mut db = MetricsDatabase { conn };
+        let result = db.initialize_schema();
+
+        // 关键断言 1：不再报错
+        assert!(
+            result.is_ok(),
+            "schema 版本更新时应降级而非报错，实际: {:?}",
+            result.err()
+        );
+
+        // 关键断言 2：降级后仍可正常写入（走内存库，不污染磁盘上的新版 DB）
+        db.insert_events(&["{\"kind\":\"probe\"}".to_string()])
+            .expect("降级后写入应成功");
+
+        // 关键断言 3：磁盘上的原始 DB 未被本 build 改写（版本仍是更高的那个）
+        let check = Connection::open(&db_path).unwrap();
+        let on_disk: String = check
+            .query_row(
+                "SELECT value FROM schema_metadata WHERE key = 'version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            on_disk,
+            future_version.to_string(),
+            "磁盘上的新版 schema 不应被降级逻辑改写"
+        );
     }
 
     #[test]

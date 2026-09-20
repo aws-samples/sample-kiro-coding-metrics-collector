@@ -9,6 +9,223 @@ import { getGitAiBinary } from "./checkpoint";
 import { STATS_URL } from "./apiConfig";
 
 /**
+ * Sentinel returned by `resolveHooksDir` when the repository has hooks
+ * explicitly disabled via `core.hooksPath=/dev/null` (or `NUL` on Windows).
+ */
+export const HOOKS_DISABLED = "__HOOKS_DISABLED__";
+
+/**
+ * Resolve the real git directory for a repository.
+ *
+ * Uses `git rev-parse --git-common-dir`, which is required for correctness in
+ * two common layouts where `<repo>/.git` is a *file* rather than a directory:
+ *   - submodules (`.git` points into the parent's `modules/` dir)
+ *   - linked worktrees (`.git` points at the main repo's `worktrees/` dir)
+ *
+ * In both cases naively joining `<repo>/.git/hooks` fails. `--git-common-dir`
+ * also resolves to the shared git dir for worktrees, which is where hooks live.
+ *
+ * Falls back to `<repoPath>/.git` when git is unavailable or the command fails.
+ */
+export function resolveGitCommonDir(repoPath: string): string {
+  try {
+    const result = spawnSync("git", ["-C", repoPath, "rev-parse", "--git-common-dir"], {
+      timeout: 5000,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0 && result.stdout) {
+      const raw = result.stdout.trim();
+      if (raw) {
+        return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(repoPath, raw);
+      }
+    }
+  } catch {
+    /* fall through to default below */
+  }
+  return path.join(repoPath, ".git");
+}
+
+/**
+ * Resolve the directory where git looks for hooks in a repository.
+ *
+ * Honours `core.hooksPath` (relative values are resolved against the repo root),
+ * which some organisations set to a shared hooks directory. When it is set to
+ * `/dev/null` or `NUL`, hooks are intentionally disabled and `HOOKS_DISABLED`
+ * is returned so callers can skip installation instead of writing a file that
+ * git will never execute.
+ *
+ * Defaults to `<git-common-dir>/hooks`.
+ */
+export function resolveHooksDir(repoPath: string): string {
+  try {
+    const result = spawnSync("git", ["-C", repoPath, "config", "--get", "core.hooksPath"], {
+      timeout: 5000,
+      encoding: "utf-8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0 && result.stdout) {
+      const raw = result.stdout.trim();
+      if (raw) {
+        if (raw === "/dev/null" || raw.toLowerCase() === "nul") {
+          console.log(`[git-ai-kiro] core.hooksPath=${raw} — hooks disabled for ${repoPath}`);
+          return HOOKS_DISABLED;
+        }
+        const resolved = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(repoPath, raw);
+        console.log(`[git-ai-kiro] core.hooksPath=${raw} → resolved to ${resolved}`);
+        return resolved;
+      }
+    }
+  } catch {
+    /* git config failed — use the default below */
+  }
+  return path.join(resolveGitCommonDir(repoPath), "hooks");
+}
+
+/**
+ * Result of inspecting an existing hook file before we modify it.
+ *   - `text`: the file's contents (empty string when the file doesn't exist)
+ *   - `unsafe`: true when the file exists but is NOT UTF-8 text, meaning we must
+ *     not rewrite it
+ */
+interface ExistingHook {
+  text: string;
+  unsafe: boolean;
+}
+
+/**
+ * Read an existing hook file as text, refusing to touch non-text hooks.
+ *
+ * Our install strategy is "read as utf-8 → append a marker-delimited section →
+ * write back". That is only safe for text hooks. Some environments install
+ * *compiled binary* hooks (corporate security tooling commonly does this, via a
+ * machine-wide `core.hooksPath`). Decoding such a file as utf-8 is lossy —
+ * invalid byte sequences become U+FFFD — so writing it back would corrupt the
+ * existing hook.
+ *
+ * Returns `unsafe: true` when the file exists and does not round-trip as utf-8,
+ * so callers can skip installation rather than destroy someone else's hook.
+ */
+function readExistingHook(hookPath: string): ExistingHook {
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(hookPath);
+  } catch {
+    return { text: "", unsafe: false }; // does not exist yet
+  }
+
+  // A NUL byte is a reliable indicator of binary content; additionally require
+  // that the bytes round-trip through utf-8 without replacement characters.
+  if (raw.includes(0)) {
+    return { text: "", unsafe: true };
+  }
+  const text = raw.toString("utf-8");
+  if (Buffer.compare(Buffer.from(text, "utf-8"), raw) !== 0) {
+    return { text: "", unsafe: true };
+  }
+  return { text, unsafe: false };
+}
+
+/** Whether a hooks directory sits inside the repository's own git dir. */
+function isInsideRepo(repoPath: string, hooksDir: string): boolean {
+  const repoHooksRoot = path.resolve(resolveGitCommonDir(repoPath));
+  const resolved = path.resolve(hooksDir);
+  return resolved === repoHooksRoot || resolved.startsWith(repoHooksRoot + path.sep);
+}
+
+/** Result of deciding where a hook should be installed. */
+export interface HookTarget {
+  /** Directory to install into, or HOOKS_DISABLED to skip entirely. */
+  dir: string;
+  /**
+   * Whether git will actually execute a hook placed in `dir`.
+   *
+   * False when `core.hooksPath` points somewhere we cannot safely write (e.g. a
+   * machine-wide directory owned by corporate tooling): we still install into
+   * the repository's own hooks dir so the hook exists and is ready if the
+   * override is removed, but git will not run it while the override is active.
+   */
+  effective: boolean;
+}
+
+/**
+ * Decide where to install a hook, degrading gracefully when `core.hooksPath`
+ * points at a directory we must not touch.
+ *
+ * Rationale: a machine-wide `core.hooksPath` (common with corporate security
+ * tooling) makes git ignore `<repo>/.git/hooks` entirely. Writing into that
+ * shared directory is not acceptable — it is usually root-owned, applies to
+ * every repository on the machine, and its hooks are often compiled binaries we
+ * would corrupt. So when the target is unusable we fall back to the repository's
+ * own hooks dir and report `effective: false`, letting callers arrange another
+ * way to collect data.
+ *
+ * @param hookName  Hook file name, used to check whether an existing entry is
+ *                  a non-text hook we must not rewrite.
+ */
+export function resolveHookTarget(repoPath: string, hookName: string): HookTarget {
+  const effectiveDir = resolveHooksDir(repoPath);
+  if (effectiveDir === HOOKS_DISABLED) {
+    return { dir: HOOKS_DISABLED, effective: false };
+  }
+
+  const repoHooksDir = path.join(resolveGitCommonDir(repoPath), "hooks");
+
+  // Target inside the repo: always fine.
+  if (isInsideRepo(repoPath, effectiveDir)) {
+    return { dir: effectiveDir, effective: true };
+  }
+
+  // Target outside the repo — only use it if we can write there AND we would not
+  // be clobbering a non-text hook.
+  const existing = readExistingHook(path.join(effectiveDir, hookName));
+  let writable = false;
+  try {
+    fs.accessSync(effectiveDir, fs.constants.W_OK);
+    writable = true;
+  } catch {
+    writable = false;
+  }
+
+  if (writable && !existing.unsafe) {
+    console.warn(
+      `[git-ai-kiro] core.hooksPath points outside this repository (${effectiveDir}). ` +
+        `A hook installed there applies to every repository on this machine.`
+    );
+    return { dir: effectiveDir, effective: true };
+  }
+
+  const why = !writable ? "not writable" : "contains a non-text hook";
+  console.log(
+    `[git-ai-kiro] core.hooksPath=${effectiveDir} is ${why}; installing ${hookName} into ` +
+      `${repoHooksDir} instead. NOTE: git will not run it while core.hooksPath is set, ` +
+      `so commit stats will be uploaded by the extension instead of the hook.`
+  );
+  return { dir: repoHooksDir, effective: false };
+}
+
+/**
+ * Whether our post-commit hook will actually be executed by git for this repo.
+ *
+ * True only when the hook file in git's *effective* hooks directory carries our
+ * marker. Used to decide whether the extension must upload commit stats itself.
+ */
+export function isPostCommitHookEffective(repoPath: string): boolean {
+  try {
+    const dir = resolveHooksDir(repoPath);
+    if (dir === HOOKS_DISABLED) return false;
+    const hookPath = path.join(dir, "post-commit");
+    const existing = readExistingHook(hookPath);
+    if (existing.unsafe) return false;
+    return existing.text.includes("# >>> git-ai-kiro post-commit hook >>>");
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Find the git repository root by walking up from the given path.
  * Returns null if no .git directory is found.
  */
@@ -113,7 +330,12 @@ export function installPreCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = path.join(repoPath, ".git", "hooks");
+  const target = resolveHookTarget(repoPath, "pre-commit");
+  if (target.dir === HOOKS_DISABLED) {
+    console.log(`[git-ai-kiro] Skip pre-commit hook: hooks disabled for ${repoPath}`);
+    return;
+  }
+  const hooksDir = target.dir;
   const hookPath = path.join(hooksDir, "pre-commit");
   const marker = "# >>> git-ai-kiro pre-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro pre-commit hook <<<";
@@ -127,9 +349,17 @@ export function installPreCommitHook(repoPath: string): void {
   }
 
   // Check if hook already has our section — remove old version to update
-  let existingContent = "";
-  try {
-    existingContent = fs.readFileSync(hookPath, "utf-8");
+  const existing = readExistingHook(hookPath);
+  if (existing.unsafe) {
+    console.error(
+      `[git-ai-kiro] Refusing to modify non-text hook at ${hookPath} ` +
+        `(likely a compiled hook installed by other tooling). Skipping install ` +
+        `to avoid corrupting it.`
+    );
+    return;
+  }
+  let existingContent = existing.text;
+  {
     if (existingContent.includes(marker)) {
       const startIdx = existingContent.indexOf(marker);
       const endIdx = existingContent.indexOf(endMarker);
@@ -138,8 +368,6 @@ export function installPreCommitHook(repoPath: string): void {
         existingContent = existingContent.replace(/\n{3,}/g, "\n\n").trim();
       }
     }
-  } catch {
-    // File doesn't exist yet
   }
 
   const binaryEscaped = binary.replace(/\\/g, "/");
@@ -185,7 +413,12 @@ export function installPostCommitHook(repoPath: string): void {
     return;
   }
 
-  const hooksDir = path.join(repoPath, ".git", "hooks");
+  const target = resolveHookTarget(repoPath, "post-commit");
+  if (target.dir === HOOKS_DISABLED) {
+    console.log(`[git-ai-kiro] Skip post-commit hook: hooks disabled for ${repoPath}`);
+    return;
+  }
+  const hooksDir = target.dir;
   const marker = "# >>> git-ai-kiro post-commit hook >>>";
   const endMarker = "# <<< git-ai-kiro post-commit hook <<<";
   const isWindows = os.platform() === "win32";
@@ -200,9 +433,17 @@ export function installPostCommitHook(repoPath: string): void {
   }
 
   // Check if hook already has our section — remove old version to update
-  let existingContent = "";
-  try {
-    existingContent = fs.readFileSync(hookPath, "utf-8");
+  const existing = readExistingHook(hookPath);
+  if (existing.unsafe) {
+    console.error(
+      `[git-ai-kiro] Refusing to modify non-text hook at ${hookPath} ` +
+        `(likely a compiled hook installed by other tooling). Skipping install ` +
+        `to avoid corrupting it.`
+    );
+    return;
+  }
+  let existingContent = existing.text;
+  {
     if (existingContent.includes(marker)) {
       const startIdx = existingContent.indexOf(marker);
       const endIdx = existingContent.indexOf(endMarker);
@@ -211,8 +452,6 @@ export function installPostCommitHook(repoPath: string): void {
         existingContent = existingContent.replace(/\n{3,}/g, "\n\n").trim();
       }
     }
-  } catch {
-    // File doesn't exist yet
   }
 
   // Choose hook strategy:
@@ -296,14 +535,47 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   COMMIT_SHA=$(git rev-parse HEAD 2>/dev/null)
   if [ -z "$COMMIT_SHA" ]; then exit 0; fi
   REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+
+  # --- 解析共享 git 目录（worktree / submodule 安全） ---
+  # 普通仓库为 $REPO_ROOT/.git；worktree 与 submodule 下 .git 是文件，
+  # 真实 git 目录需由 --git-common-dir 得到，否则锁文件与 working_logs
+  # 路径都会落到不存在的位置。
+  GIT_COMMON_DIR_RAW=$(git rev-parse --git-common-dir 2>/dev/null)
+  GIT_COMMON_DIR=""
+  if [ -n "$GIT_COMMON_DIR_RAW" ]; then
+    case "$GIT_COMMON_DIR_RAW" in
+      /*|[A-Za-z]:[/\\\\]*) GIT_COMMON_DIR="$GIT_COMMON_DIR_RAW" ;;
+      *) GIT_COMMON_DIR=$(cd "$REPO_ROOT" 2>/dev/null && cd "$GIT_COMMON_DIR_RAW" 2>/dev/null && pwd) ;;
+    esac
+  fi
+  [ -z "$GIT_COMMON_DIR" ] && GIT_COMMON_DIR="$REPO_ROOT/.git"
+
+  # --- flock 互斥：防止短时间内连续 commit 导致两个 hook 并发写 ---
+  # 并发写 refs/notes/ai 与 working_logs 会互相覆盖，造成工作日志丢失
+  # （典型触发场景：快速合并 / 拉取产生的连续提交）。
+  # flock 在部分 Git Bash 环境中不存在，缺失时退化为不加锁，保持原行为。
+  POST_COMMIT_LOCK="$GIT_COMMON_DIR/ai/post-commit.lock"
+  mkdir -p "$GIT_COMMON_DIR/ai" 2>/dev/null
+  if command -v flock >/dev/null 2>&1; then
+    exec 200>"$POST_COMMIT_LOCK" 2>/dev/null
+    if ! flock -n 200; then
+      exit 0
+    fi
+  fi
+
   sleep 2
+
+  # --- 检测 cherry-pick：同一份改动会被重复计入，直接退出不上报 ---
+  REFLOG_MSG=$(git reflog -1 --format=%gs HEAD 2>/dev/null || echo "")
+  case "$REFLOG_MSG" in
+    *"cherry-pick"*) exit 0 ;;
+  esac
 
   # --- 检测 amend：如果是 git commit --amend，使用 --amend-from 标志调用 git-ai ---
   # 判定依据：HEAD reflog 最新一条是 "commit (amend)"
   # git-ai 的 amend 处理会正确地从 working_logs/<OLD_SHA>/ 读取 AI checkpoints，
   # 并结合 amend 后的新 parent 生成正确的 authorship note。
   IS_AMEND=0
-  REFLOG_MSG=$(git reflog -1 --format=%gs HEAD 2>/dev/null || echo "")
   case "$REFLOG_MSG" in
     *"commit (amend)"*) IS_AMEND=1 ;;
   esac
@@ -318,7 +590,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
       git notes --ref=ai remove "$COMMIT_SHA" 2>/dev/null || true
       # 清理 SessionLogWatcher 可能在 working_logs/<COMMIT_SHA>/ 下残留的 INITIAL 文件，
       # 避免干扰 amend 处理（amend 处理使用的是 working_logs/<OLD_SHA>/）。
-      rm -f "$REPO_ROOT/.git/ai/working_logs/$COMMIT_SHA/INITIAL" 2>/dev/null || true
+      rm -f "$GIT_COMMON_DIR/ai/working_logs/$COMMIT_SHA/INITIAL" 2>/dev/null || true
       AMEND_ARGS=" --amend-from $OLD_SHA"
     fi
   fi
@@ -333,7 +605,15 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   }
 
   # --- 计算精确的 ai_deletions / human_deletions ---
-  DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json 2>/dev/null || echo "")
+  # --all-prompts 是必须的：不加时 diff --json 的 prompts 只包含"由新增行归因推导出"
+  # 的 prompt。纯删除提交没有任何新增行归因，prompts 会是空的，于是下面两条策略
+  # 都取不到 AI 删除量，AI 删的行会被全部计入 human_deletions。
+  # 加上它会把 authorship note 里的 prompt（含 total_deletions）一并合并进来。
+  DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json --all-prompts 2>/dev/null || echo "")
+  # 兼容旧版二进制：不识别 --all-prompts 时回退（否则会整段拿不到 diff）
+  if [ -z "$DIFF_JSON" ]; then
+    DIFF_JSON=$("${binaryPath}" diff "$COMMIT_SHA" --json 2>/dev/null || echo "")
+  fi
   GIT_DEL=$(json_get_num "$STATS" "git_diff_deleted_lines")
   GIT_DEL=\${GIT_DEL:-0}
   AI_DEL=0
@@ -376,7 +656,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
 
   # 优先使用插件端计算的 AI 删除行数（精确值）
   # kiro_net_deletions 记录的是 AI 实际删除的行数（通过行级 diff 计算）
-  KIRO_NET_DEL_FILE="$REPO_ROOT/.git/ai/kiro_net_deletions"
+  KIRO_NET_DEL_FILE="$GIT_COMMON_DIR/ai/kiro_net_deletions"
   KIRO_NET_DEL=0
   if [ -f "$KIRO_NET_DEL_FILE" ]; then
     KIRO_NET_DEL=$(cat "$KIRO_NET_DEL_FILE" 2>/dev/null | tr -d '[:space:]')
@@ -433,21 +713,25 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   fi
 
   # 上报后清空 kiro_net_deletions
-  rm -f "$REPO_ROOT/.git/ai/kiro_net_deletions" 2>/dev/null
+  rm -f "$GIT_COMMON_DIR/ai/kiro_net_deletions" 2>/dev/null
   REPO_NAME=$(basename "$REPO_ROOT")
   BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   USER_NAME=$(git config user.name 2>/dev/null)
   USER_EMAIL=$(git config user.email 2>/dev/null)
-  MACHINE_ID=$(hostname | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "unknown")
+  # printf '%s' 而非 echo/hostname 直接管道：必须不带尾随换行，才能与插件侧
+  # statsUploader 的 sha256(os.hostname()) 得到同一个 machine_id。否则同一台机器
+  # 经 hook 与经插件上报会算出两个不同的 machine_id（看板会当成两台设备），
+  # 且两条路径的幂等键也不一致，无法互相去重。
+  MACHINE_ID=$(printf '%s' "$(hostname)" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "unknown")
   REPORTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
   REMOTE_URL=$(git config remote.origin.url 2>/dev/null)
   IDEM_KEY=$(echo -n "$COMMIT_SHA:$MACHINE_ID" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "$COMMIT_SHA")
   # 从 last_upload_payload.json 中从后往前查找最近的 [userSync] 记录，提取 user_id
   USER_ID=""
-  if [ -f "$REPO_ROOT/.git/ai/last_upload_payload.json" ]; then
-    USER_ID=$(tac "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
+  if [ -f "$GIT_COMMON_DIR/ai/last_upload_payload.json" ]; then
+    USER_ID=$(tac "$GIT_COMMON_DIR/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
     if [ -z "$USER_ID" ]; then
-      USER_ID=$(tail -r "$REPO_ROOT/.git/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
+      USER_ID=$(tail -r "$GIT_COMMON_DIR/ai/last_upload_payload.json" 2>/dev/null | grep -m1 '\\[userSync\\]' | grep -o '"user_id":"[^"]*"' | head -1 | sed 's/"user_id":"//;s/"//' || echo "")
     fi
   fi
   USER_ID_JSON=""
@@ -458,7 +742,7 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   # 构建 PAYLOAD：通过临时文件分段写入，避免 commit_msg 的多字节字符
   # 在 shell 变量赋值时被错误转码（Windows GBK -> UTF-8 转换问题）。
   # 关键：commit_msg 直接 git log → 文件 → cat 进 payload 文件，不经过 shell 变量。
-  AI_DIR="$REPO_ROOT/.git/ai"
+  AI_DIR="$GIT_COMMON_DIR/ai"
   mkdir -p "$AI_DIR" 2>/dev/null
   COMMIT_MSG_FILE="$AI_DIR/.commit_msg.tmp"
   PAYLOAD_FILE="$AI_DIR/.payload.tmp"
@@ -473,14 +757,21 @@ function buildHookSectionUnix(binaryPath: string, marker: string, endMarker: str
   cat "$PAYLOAD_FILE" >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
   printf '\\n' >> "$AI_DIR/last_upload_payload.json" 2>/dev/null
   # 清理 15 天前的行（纯 shell 实现）
-  LOG_FILE="$REPO_ROOT/.git/ai/last_upload_payload.json"
+  LOG_FILE="$GIT_COMMON_DIR/ai/last_upload_payload.json"
   if [ -f "$LOG_FILE" ]; then
     CUTOFF_DATE=$(date -u -v-15d +"%Y-%m-%d" 2>/dev/null || date -u -d "15 days ago" +"%Y-%m-%d" 2>/dev/null || echo "")
     if [ -n "$CUTOFF_DATE" ]; then
       awk -v cutoff="$CUTOFF_DATE" '
         {
-          match($0, /\\[([0-9]{4}-[0-9]{2}-[0-9]{2})T/, arr)
-          if (arr[1] == "" || arr[1] >= cutoff) print
+          # 只用 POSIX awk 特性：两参数 match() + RSTART，不用 GNU awk 专有的
+          # 三参数 match($0, re, arr)，否则 macOS/BSD awk 会语法报错导致清理静默失效。
+          # 同理不用 {n} 区间量词（旧版 BSD awk 不支持），改为显式重复字符类。
+          if (match($0, /\\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/) == 0) {
+            # 没有时间戳的行（如手工追加内容）一律保留
+            print
+          } else if (substr($0, RSTART + 1, 10) >= cutoff) {
+            print
+          }
         }
       ' "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || rm -f "$LOG_FILE.tmp" 2>/dev/null
     fi
@@ -783,7 +1074,10 @@ function buildHookSectionWindows(
     '$stats = & "' + binaryWin + '" stats $commitSha --json' + ignoreArgsPs + " 2>$null",
     "if (-not $stats) { exit 0 }",
     "if ($stats -is [array]) { $stats = $stats -join '' }",
-    '$diffJson = & "' + binaryWin + '" diff $commitSha --json 2>$null',
+    // --all-prompts 同 sh 版：纯删除提交没有新增行归因，不加它 prompts 会为空，
+    // AI 删除量取不到，会被全部计入 human_deletions。
+    '$diffJson = & "' + binaryWin + '" diff $commitSha --json --all-prompts 2>$null',
+    "if (-not $diffJson) { $diffJson = & \"" + binaryWin + "\" diff $commitSha --json 2>$null }",
     "if ($diffJson -is [array]) { $diffJson = $diffJson -join '' }",
     "$statsObj = $stats | ConvertFrom-Json",
     "$gitDel = if ($statsObj.git_diff_deleted_lines) { [int]$statsObj.git_diff_deleted_lines } else { 0 }",

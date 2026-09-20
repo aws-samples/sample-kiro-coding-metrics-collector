@@ -2,24 +2,96 @@ import * as vscode from "vscode";
 import { execFileSync, spawn } from "node:child_process";
 import { getGitAiBinary } from "./checkpoint";
 import { reportUserLogin } from "./userSync";
+import { isPostCommitHookEffective } from "./gitUtils";
+import { uploadCommitStats } from "./statsUploader";
 
 /** Timeout in ms for the post-commit child process. */
 const POST_COMMIT_TIMEOUT_MS = 30_000;
 
 /**
- * Invoke the git-ai binary to execute post-commit processing.
- * git-ai doesn't have a direct "post-commit" command — the post-commit
- * logic (working logs → Git Notes) happens automatically when git is
- * proxied through git-ai. For direct invocations, we use `git-ai stats`
- * which triggers the same conversion internally.
- * @returns true always (no-op, stats query handles conversion)
+ * 执行 post-commit 处理：把 working_logs 转换成 authorship Git Notes。
+ *
+ * 这一步是必须的，不能省。此前这里是空实现，注释称「git-ai stats 会在内部触发
+ * 同样的转换」——实测该说法不成立：提交后不跑 post-commit 时不会产生 note，
+ * 随后 `git-ai stats` 也不会补建，于是 AI 写的行全部被计成 human_additions。
+ *
+ * 之前之所以看起来正常，是因为机器上另装了 git-ai 并把 `git` 代理到它，
+ * `git commit` 被拦截时顺带完成了转换。一旦那个全局安装被卸载（或机器上从未
+ * 装过），链路就断了。插件不应依赖一个外部安装才能工作。
+ *
+ * 幂等性：git-ai post-commit 在该提交已有 note 时会直接跳过，因此与仍在执行的
+ * post-commit hook 并存也不会重复写入。
+ *
+ * @returns 转换成功返回 true；失败返回 false（调用方仍会继续上报，
+ *          缺少归因也比完全不上报好）
  */
 export function runPostCommit(
-  _repoPath: string,
-  _commitSha: string
+  repoPath: string,
+  commitSha: string
 ): Promise<boolean> {
-  // No-op: git-ai stats will handle working_logs → Git Notes conversion
-  return Promise.resolve(true);
+  const binary = getGitAiBinary();
+  if (!binary) {
+    console.error("[git-ai-kiro] Cannot run post-commit: bundled binary not found");
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+
+    try {
+      const child = spawn(binary, ["post-commit", commitSha], {
+        cwd: repoPath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stderr = "";
+      child.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          /* already gone */
+        }
+        console.error(
+          `[git-ai-kiro] post-commit timed out after ${POST_COMMIT_TIMEOUT_MS}ms for ${commitSha.slice(0, 8)}`
+        );
+        done(false);
+      }, POST_COMMIT_TIMEOUT_MS);
+
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        console.error(`[git-ai-kiro] post-commit spawn failed: ${err}`);
+        done(false);
+      });
+
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          console.log(
+            `[git-ai-kiro] post-commit completed for ${commitSha.slice(0, 8)}`
+          );
+          done(true);
+        } else {
+          console.error(
+            `[git-ai-kiro] post-commit exited with ${code} for ${commitSha.slice(0, 8)}` +
+              (stderr.trim() ? `: ${stderr.trim().split("\n")[0]}` : "")
+          );
+          done(false);
+        }
+      });
+    } catch (err) {
+      console.error(`[git-ai-kiro] post-commit unexpected error: ${err}`);
+      done(false);
+    }
+  });
 }
 
 /**
@@ -128,8 +200,25 @@ export class CommitWatcher implements vscode.Disposable {
         }
         try {
           // 每次 commit 时也上报用户登录信息（更新 IP、活跃时间）
-          // Stats 上传由 post-commit hook 负责，避免重复上报
           await reportUserLogin();
+        } catch (err) {
+          console.error(`[git-ai-kiro] Failed to report user login: ${err}`);
+        }
+
+        // Stats 上传通常由 post-commit hook 负责。但当 core.hooksPath 被全局/系统级
+        // 覆盖到我们无法写入的目录时（常见于企业安全工具），git 根本不会执行仓库内的
+        // hook —— 此时若不在这里补上传，该仓库的提交统计会全部丢失。
+        //
+        // 仅在「我们的 hook 不会被执行」时才上传，避免与 hook 重复上报：两条路径的
+        // 幂等键虽已对齐，但重复请求没有必要。
+        try {
+          if (!isPostCommitHookEffective(repoPath)) {
+            console.log(
+              `[git-ai-kiro] post-commit hook is not effective for ${repoPath} ` +
+                `(core.hooksPath override); uploading stats from the extension instead.`
+            );
+            await uploadCommitStats(repoPath, currentHead);
+          }
         } catch (err) {
           console.error(`[git-ai-kiro] Failed to upload commit stats: ${err}`);
         }

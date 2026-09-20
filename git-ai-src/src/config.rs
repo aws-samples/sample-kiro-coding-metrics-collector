@@ -783,6 +783,17 @@ fn build_feature_flags(file_cfg: &Option<FileConfig>) -> FeatureFlags {
 }
 
 fn resolve_git_path(file_cfg: &Option<FileConfig>) -> String {
+    // Helper: verify the git binary actually runs. Catches STATUS_DLL_NOT_FOUND
+    // (0xC0000135) on Windows, where a partially-installed Git for Windows leaves
+    // an executable file on disk that aborts immediately due to missing DLLs.
+    fn git_runs_ok(path: &str) -> bool {
+        std::process::Command::new(path)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     // 1) From config file
     if let Some(cfg) = file_cfg
         && let Some(path) = cfg.git_path.as_ref()
@@ -790,7 +801,7 @@ fn resolve_git_path(file_cfg: &Option<FileConfig>) -> String {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             let p = Path::new(trimmed);
-            if is_executable(p) && !path_is_git_ai_binary(p) {
+            if is_executable(p) && !path_is_git_ai_binary(p) && git_runs_ok(trimmed) {
                 return trimmed.to_string();
             }
         }
@@ -807,15 +818,36 @@ fn resolve_git_path(file_cfg: &Option<FileConfig>) -> String {
         "/usr/local/sbin/git",
         "/usr/sbin/git",
         // Windows Git for Windows
-        r"C:\\Program Files\\Git\\bin\\git.exe",
-        r"C:\\Program Files (x86)\\Git\\bin\\git.exe",
+        // NOTE: These must be regular strings, not raw strings. In a raw string
+        // (r"...") a backslash is literal, so r"C:\\Program Files\\..." yields a
+        // path containing *double* backslashes, which never matches a real file
+        // and makes `is_executable` always fail.
+        "C:\\Program Files\\Git\\bin\\git.exe",
+        "C:\\Program Files\\Git\\cmd\\git.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+        "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
     ];
 
-    if let Some(found) = candidates.iter().map(Path::new).find(|p| is_executable(p)) {
+    // 3) Try PATH lookup FIRST: it usually resolves to a working git — the same
+    //    one the user invokes from a terminal. Hardcoded candidates may exist on
+    //    disk yet be broken (e.g. missing mingw DLLs), so PATH is the safer bet.
+    if let Some(found) = locate_git_in_path()
+        && git_runs_ok(&found)
+    {
+        return found;
+    }
+
+    // 4) Then the hardcoded candidates, accepting only ones that actually run.
+    if let Some(found) = candidates
+        .iter()
+        .map(Path::new)
+        .find(|p| is_executable(p) && git_runs_ok(&p.to_string_lossy()))
+    {
         return found.to_string_lossy().to_string();
     }
 
-    // 3) Fallback: locate git via PATH using `which` (Unix) or `where.exe` (Windows)
+    // 5) Last resort: return any PATH result even if `--version` failed, so the
+    //    user gets a meaningful error from git itself rather than "not found".
     if let Some(found) = locate_git_in_path() {
         return found;
     }
